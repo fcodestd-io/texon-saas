@@ -2,10 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import {
-  submitWarehouseOutgoingAction,
-  getWarehouseOutgoingHistoryAction,
-} from "./action";
+import { getWarehouseOutgoingHistoryAction } from "./action";
 import { toast } from "sonner";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import {
@@ -47,7 +44,7 @@ export function WarehouseOutgoingPageClient({
   // Form State
   const [selectedMarketplaceId, setSelectedMarketplaceId] = useState("");
   const [notes, setNotes] = useState("");
-  const [scannedItemsMap, setScannedItemsMap] = useState<
+  const [scannedItemsMap, setScannedItemsMap] = useState
     Record<string, { productVariantId: string; quantity: number }>
   >({});
 
@@ -133,6 +130,7 @@ export function WarehouseOutgoingPageClient({
 
       toast.success(
         `Berhasil scan: ${matched.productName} (${matched.color} - ${matched.size})`,
+        { id: "scan-result" },
       );
       setScannedItemsMap((prev) => {
         const currentQty = prev[matched.id]?.quantity || 0;
@@ -147,7 +145,9 @@ export function WarehouseOutgoingPageClient({
       setSearchQuery("");
       setIsSearchOpen(false);
     } else {
-      toast.error(`SKU / Barcode "${scannedCode}" tidak ditemukan!`);
+      toast.error(`SKU / Barcode "${scannedCode}" tidak ditemukan!`, {
+        id: "scan-result",
+      });
     }
   };
 
@@ -224,9 +224,12 @@ export function WarehouseOutgoingPageClient({
 
   // Handler Pelatuk Tombol Scan
   const handleTriggerManualScan = () => {
+    if (canScanRef.current) return; // cegah tap ganda saat scanner masih aktif
+
     canScanRef.current = true;
     setIsReadyToScan(true);
     toast.info("Pemindai Aktif! Arahkan kamera ke barcode...", {
+      id: "scan-trigger",
       duration: 1200,
     });
 
@@ -299,11 +302,15 @@ export function WarehouseOutgoingPageClient({
 
     setIsSubmitting(true);
     try {
-      const res = await submitWarehouseOutgoingAction({
-        marketplaceId: selectedMarketplaceId || null,
-        notes,
-        items: validItems,
-      });
+      const res = await fetch("/api/warehouse/outgoing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          marketplaceId: selectedMarketplaceId || null,
+          notes,
+          items: validItems,
+        }),
+      }).then((r) => r.json());
 
       if (res?.success) {
         toast.success(res.message);
@@ -325,7 +332,7 @@ export function WarehouseOutgoingPageClient({
       setIsSubmitting(false);
     }
   };
-  
+
   // Array Scanned List untuk UI Mapping
   const scannedListUI = Object.values(scannedItemsMap)
     .map((item) => {
@@ -440,7 +447,8 @@ export function WarehouseOutgoingPageClient({
           {/* Tombol Pelatuk Scan Manual */}
           <button
             onClick={handleTriggerManualScan}
-            className={`w-full py-3 font-mono font-bold rounded-lg flex items-center justify-center gap-2 uppercase text-xs shadow-lg transition-all ${
+            disabled={isReadyToScan}
+            className={`w-full py-3 font-mono font-bold rounded-lg flex items-center justify-center gap-2 uppercase text-xs shadow-lg transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
               isReadyToScan
                 ? "bg-emerald-500 text-neutral-950 animate-pulse"
                 : "bg-amber-500 hover:bg-amber-400 text-neutral-950"
