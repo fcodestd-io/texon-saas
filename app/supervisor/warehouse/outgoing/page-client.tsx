@@ -29,6 +29,7 @@ import {
 
 const LOCAL_STORAGE_KEY = "SPV_WAREHOUSE_OUTGOING_DRAFT_V1";
 const SCANNER_ELEMENT_ID = "html5qrcode-webcam-stream";
+const SCAN_COOLDOWN_MS = 1500; // Delay rate limit 1.5 detik
 
 export function WarehouseOutgoingPageClient({
   initialMarketplaces = [],
@@ -60,11 +61,12 @@ export function WarehouseOutgoingPageClient({
   // Scanner State (html5-qrcode)
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
+  const lastScannedTimeRef = useRef<number>(0); // Guard Timestamp
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
 
-  // 1. DRAFT LOCALSTORAGE PERSISTENCE (Load Pertama)
+  // 1. DRAFT LOCALSTORAGE PERSISTENCE
   useEffect(() => {
     try {
       const savedDraft = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -107,8 +109,15 @@ export function WarehouseOutgoingPageClient({
     toast.info("Draf barang keluar berhasil dibersihkan!");
   };
 
-  // Handler Hasil Scan / Select SKU
-  const handleBarcodeScanned = (scannedCode: string) => {
+  // Handler Hasil Scan / Select SKU (dengan Throttle Check)
+  const handleBarcodeScanned = (scannedCode: string, isFromScanner = false) => {
+    const now = Date.now();
+
+    // Jika dari kamera scanner, kunci pemrosesan jika belum 1.5 detik
+    if (isFromScanner && now - lastScannedTimeRef.current < SCAN_COOLDOWN_MS) {
+      return;
+    }
+
     const matched = variants.find(
       (v) =>
         (v.barcode && v.barcode.toLowerCase() === scannedCode.toLowerCase()) ||
@@ -116,6 +125,7 @@ export function WarehouseOutgoingPageClient({
     );
 
     if (matched) {
+      lastScannedTimeRef.current = now; // Update timestamp scan terakhir
       toast.success(
         `Berhasil scan: ${matched.productName} (${matched.color} - ${matched.size})`,
       );
@@ -132,6 +142,9 @@ export function WarehouseOutgoingPageClient({
       setSearchQuery("");
       setIsSearchOpen(false);
     } else {
+      if (isFromScanner) {
+        lastScannedTimeRef.current = now;
+      }
       toast.error(`SKU / Barcode "${scannedCode}" tidak ditemukan!`);
     }
   };
@@ -158,29 +171,25 @@ export function WarehouseOutgoingPageClient({
 
     html5QrcodeRef.current = html5Qrcode;
 
-    // Paksa nyalakan kamera belakang langsung tanpa UI permission prompt
     html5Qrcode
       .start(
-        { facingMode: "environment" }, // Paksa Kamera Belakang Utama
+        { facingMode: "environment" },
         {
           fps: 15,
-          qrbox: { width: 260, height: 130 }, // Rectangle Bounding Box
+          qrbox: { width: 260, height: 130 },
         },
         (decodedText) => {
-          handleBarcodeScanned(decodedText.trim());
+          handleBarcodeScanned(decodedText.trim(), true);
         },
-        () => {
-          // Ignore frame scan errors
-        },
+        () => {},
       )
       .catch((err) => {
         console.error("Gagal membuka kamera belakang:", err);
-        // Fallback jika HP memblokir { facingMode: "environment" }
         html5Qrcode
           .start(
             { facingMode: "user" },
             { fps: 15, qrbox: { width: 260, height: 130 } },
-            (decodedText) => handleBarcodeScanned(decodedText.trim()),
+            (decodedText) => handleBarcodeScanned(decodedText.trim(), true),
             () => {},
           )
           .catch(() => {
@@ -298,7 +307,7 @@ export function WarehouseOutgoingPageClient({
 
   return (
     <div className="space-y-4 text-xs font-sans max-w-md mx-auto">
-      {/* Top Action Bar: Kembali ke Menu Utama & Reset Draf */}
+      {/* Top Action Bar */}
       <div className="flex items-center justify-between font-mono">
         <Link
           href="/supervisor/warehouse/dashboard"
@@ -382,7 +391,7 @@ export function WarehouseOutgoingPageClient({
         </button>
       </div>
 
-      {/* DIRECT ON-PAGE WEBCAM STREAM CONTAINER (NON-MODAL) */}
+      {/* DIRECT ON-PAGE WEBCAM STREAM CONTAINER */}
       {isScannerOpen && (
         <div className="relative bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden p-2 space-y-2">
           <div
@@ -390,7 +399,7 @@ export function WarehouseOutgoingPageClient({
             className="w-full rounded-lg overflow-hidden bg-neutral-900 border border-neutral-800 [&_video]:w-full [&_video]:h-full [&_video]:object-cover"
           ></div>
           <p className="text-[9.5px] font-mono text-neutral-400 text-center">
-            Arahkan Barcode SKU ke area scanner di atas.
+            Arahkan Barcode SKU ke area scanner di atas. (Delay 1.5s per scan)
           </p>
         </div>
       )}
@@ -438,7 +447,7 @@ export function WarehouseOutgoingPageClient({
               filteredVariants.map((v) => (
                 <button
                   key={v.id}
-                  onClick={() => handleBarcodeScanned(v.sku)}
+                  onClick={() => handleBarcodeScanned(v.sku, false)}
                   className="w-full p-2 hover:bg-neutral-900 text-left rounded flex justify-between items-center transition-colors border-b border-neutral-900 last:border-0"
                 >
                   <div>
@@ -460,7 +469,7 @@ export function WarehouseOutgoingPageClient({
         )}
       </div>
 
-      {/* DAFTAR ITEM KELUAR (INCREMENT/DECREMENT & IMPACT STOK) */}
+      {/* DAFTAR ITEM KELUAR */}
       <div className="space-y-2">
         <p className="text-[10px] font-mono text-neutral-500 uppercase px-1">
           DAFTAR BARANG KELUAR ({scannedListUI.length} ITEM):
@@ -495,7 +504,7 @@ export function WarehouseOutgoingPageClient({
                 </button>
               </div>
 
-              {/* IMPACT STOK: STOK AWAL -> QTY KELUAR -> STOK SETELAH */}
+              {/* IMPACT STOK */}
               <div className="grid grid-cols-3 gap-1 bg-neutral-950 p-2 rounded border border-neutral-800/80 text-[10px] text-center">
                 <div>
                   <span className="text-[8.5px] text-neutral-500 block">

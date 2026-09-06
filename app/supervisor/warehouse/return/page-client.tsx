@@ -31,6 +31,7 @@ import {
 
 const LOCAL_STORAGE_KEY = "SPV_WAREHOUSE_RETURN_DRAFT_V1";
 const SCANNER_ELEMENT_ID = "html5qrcode-return-stream";
+const SCAN_COOLDOWN_MS = 1500; // Delay rate limit 1.5 detik
 
 export function WarehouseReturnPageClient({
   initialMarketplaces = [],
@@ -69,11 +70,12 @@ export function WarehouseReturnPageClient({
   // Scanner State
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
+  const lastScannedTimeRef = useRef<number>(0); // Guard Timestamp
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
 
-  // 1. DRAFT LOCALSTORAGE PERSISTENCE (Load Pertama)
+  // 1. DRAFT LOCALSTORAGE PERSISTENCE
   useEffect(() => {
     try {
       const savedDraft = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -116,8 +118,15 @@ export function WarehouseReturnPageClient({
     toast.info("Draf barang kembali berhasil dibersihkan!");
   };
 
-  // Handler Select SKU
-  const handleBarcodeScanned = (scannedCode: string) => {
+  // Handler Select SKU (dengan Throttle Check)
+  const handleBarcodeScanned = (scannedCode: string, isFromScanner = false) => {
+    const now = Date.now();
+
+    // Jika dari kamera scanner, kunci pemrosesan jika belum 1.5 detik
+    if (isFromScanner && now - lastScannedTimeRef.current < SCAN_COOLDOWN_MS) {
+      return;
+    }
+
     const matched = variants.find(
       (v) =>
         (v.barcode && v.barcode.toLowerCase() === scannedCode.toLowerCase()) ||
@@ -125,6 +134,7 @@ export function WarehouseReturnPageClient({
     );
 
     if (matched) {
+      lastScannedTimeRef.current = now; // Update timestamp scan terakhir
       toast.success(
         `Ditambahkan: ${matched.productName} (${matched.color} - ${matched.size})`,
       );
@@ -134,7 +144,7 @@ export function WarehouseReturnPageClient({
           ...prev,
           [matched.id]: {
             productVariantId: matched.id,
-            returnType: current?.returnType || "RESTOCK", // Default kembali ke etalase
+            returnType: current?.returnType || "RESTOCK",
             quantity: (current?.quantity || 0) + 1,
             reason: current?.reason || "",
           },
@@ -143,6 +153,9 @@ export function WarehouseReturnPageClient({
       setSearchQuery("");
       setIsSearchOpen(false);
     } else {
+      if (isFromScanner) {
+        lastScannedTimeRef.current = now;
+      }
       toast.error(`SKU / Barcode "${scannedCode}" tidak ditemukan!`);
     }
   };
@@ -173,7 +186,7 @@ export function WarehouseReturnPageClient({
       .start(
         { facingMode: "environment" },
         { fps: 15, qrbox: { width: 260, height: 130 } },
-        (decodedText) => handleBarcodeScanned(decodedText.trim()),
+        (decodedText) => handleBarcodeScanned(decodedText.trim(), true),
         () => {},
       )
       .catch((err) => {
@@ -182,7 +195,7 @@ export function WarehouseReturnPageClient({
           .start(
             { facingMode: "user" },
             { fps: 15, qrbox: { width: 260, height: 130 } },
-            (decodedText) => handleBarcodeScanned(decodedText.trim()),
+            (decodedText) => handleBarcodeScanned(decodedText.trim(), true),
             () => {},
           )
           .catch(() => {
@@ -410,7 +423,7 @@ export function WarehouseReturnPageClient({
             className="w-full rounded-lg overflow-hidden bg-neutral-900 border border-neutral-800 [&_video]:w-full [&_video]:h-full [&_video]:object-cover"
           ></div>
           <p className="text-[9.5px] font-mono text-neutral-400 text-center">
-            Arahkan Barcode SKU retur ke area kamera.
+            Arahkan Barcode SKU retur ke area kamera. (Delay 1.5s per scan)
           </p>
         </div>
       )}
@@ -458,7 +471,7 @@ export function WarehouseReturnPageClient({
               filteredVariants.map((v) => (
                 <button
                   key={v.id}
-                  onClick={() => handleBarcodeScanned(v.sku)}
+                  onClick={() => handleBarcodeScanned(v.sku, false)}
                   className="w-full p-2 hover:bg-neutral-900 text-left rounded flex justify-between items-center transition-colors border-b border-neutral-900 last:border-0"
                 >
                   <div>
