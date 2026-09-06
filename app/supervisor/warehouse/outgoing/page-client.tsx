@@ -102,14 +102,16 @@ export function WarehouseOutgoingPageClient({
     }
   }, [selectedMarketplaceId, notes, scannedItemsMap, isLoaded]);
 
-  // Reset Draft LocalStorage
-  const handleResetDraft = () => {
+  // Reset Draft LocalStorage (Parameter showToast fleksibel untuk cegah double toast)
+  const handleResetDraft = (showToast = true) => {
     setSelectedMarketplaceId("");
     setNotes("");
     setScannedItemsMap({});
     setSearchQuery("");
     localStorage.removeItem(LOCAL_STORAGE_KEY);
-    toast.info("Draf barang keluar berhasil dibersihkan!");
+    if (showToast) {
+      toast.info("Draf barang keluar berhasil dibersihkan!");
+    }
   };
 
   // Handler Hasil Scan / Select SKU
@@ -121,7 +123,6 @@ export function WarehouseOutgoingPageClient({
     );
 
     if (matched) {
-      // Vibrate Feedback jika didukung HP
       if (typeof window !== "undefined" && window.navigator?.vibrate) {
         window.navigator.vibrate(100);
       }
@@ -178,9 +179,8 @@ export function WarehouseOutgoingPageClient({
           qrbox: { width: 260, height: 130 },
         },
         (decodedText) => {
-          // Hanya proses dekode jika pelatuk ditekan (canScanRef === true)
           if (canScanRef.current) {
-            canScanRef.current = false; // Kunci kembali pelatuk
+            canScanRef.current = false;
             setIsReadyToScan(false);
             handleBarcodeScanned(decodedText.trim());
           }
@@ -226,7 +226,6 @@ export function WarehouseOutgoingPageClient({
       duration: 1200,
     });
 
-    // Otomatis reset pelatuk jika tidak ada barcode yang terdeteksi dalam 2.5 detik
     setTimeout(() => {
       if (canScanRef.current) {
         canScanRef.current = false;
@@ -285,7 +284,7 @@ export function WarehouseOutgoingPageClient({
     });
   };
 
-  // Submit Transaksi
+  // Submit & Finalisasi Transaksi
   const handleSubmit = async () => {
     const validItems = Object.values(scannedItemsMap).filter(
       (i) => i.quantity > 0,
@@ -297,22 +296,34 @@ export function WarehouseOutgoingPageClient({
     }
 
     setIsSubmitting(true);
-    const res = await submitWarehouseOutgoingAction({
-      marketplaceId: selectedMarketplaceId || null,
-      notes,
-      items: validItems,
-    });
-    setIsSubmitting(false);
+    try {
+      const res = await submitWarehouseOutgoingAction({
+        marketplaceId: selectedMarketplaceId || null,
+        notes,
+        items: validItems,
+      });
 
-    if (res.success) {
-      toast.success(res.message);
-      handleResetDraft();
-      setIsScannerOpen(false);
+      if (res?.success) {
+        // HANYA 1 TOAST SUCCESS saat finalisasi
+        toast.success(res.message || "Pengeluaran barang berhasil disimpan!");
+        handleResetDraft(false); // Reset draf tanpa memunculkan Toast reset
+        setIsScannerOpen(false);
 
-      const updatedHistory = await getWarehouseOutgoingHistoryAction();
-      setHistoryList(updatedHistory || []);
-    } else {
-      toast.error(res.message);
+        // Fetch riwayat secara aman tanpa re-load halaman crash
+        try {
+          const updatedHistory = await getWarehouseOutgoingHistoryAction();
+          if (updatedHistory) setHistoryList(updatedHistory);
+        } catch (fetchErr) {
+          console.error("Gagal memperbarui riwayat:", fetchErr);
+        }
+      } else {
+        toast.error(res?.message || "Gagal menyimpan transaksi.");
+      }
+    } catch (err: any) {
+      console.error("Submit error:", err);
+      toast.error(err.message || "Terjadi kesalahan koneksi server.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -346,7 +357,7 @@ export function WarehouseOutgoingPageClient({
         </Link>
 
         <button
-          onClick={handleResetDraft}
+          onClick={() => handleResetDraft(true)}
           className="p-2 text-[10px] font-mono text-neutral-400 hover:text-red-400 bg-neutral-900 border border-neutral-800 rounded-lg flex items-center gap-1 transition-colors font-bold"
         >
           <RotateCcw className="w-3.5 h-3.5" /> RESET DRAF

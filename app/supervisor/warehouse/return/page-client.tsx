@@ -111,14 +111,16 @@ export function WarehouseReturnPageClient({
     }
   }, [selectedMarketplaceId, notes, returnItemsMap, isLoaded]);
 
-  // Reset Draft LocalStorage
-  const handleResetDraft = () => {
+  // Reset Draft LocalStorage (Parameter showToast fleksibel untuk cegah double toast)
+  const handleResetDraft = (showToast = true) => {
     setSelectedMarketplaceId("");
     setNotes("");
     setReturnItemsMap({});
     setSearchQuery("");
     localStorage.removeItem(LOCAL_STORAGE_KEY);
-    toast.info("Draf barang kembali berhasil dibersihkan!");
+    if (showToast) {
+      toast.info("Draf barang kembali berhasil dibersihkan!");
+    }
   };
 
   // Handler Select SKU
@@ -305,7 +307,7 @@ export function WarehouseReturnPageClient({
     });
   };
 
-  // Submit Transaksi
+  // Submit & Finalisasi Transaksi
   const handleSubmit = async () => {
     const validItems = Object.values(returnItemsMap).filter(
       (i) => i.quantity > 0,
@@ -317,22 +319,33 @@ export function WarehouseReturnPageClient({
     }
 
     setIsSubmitting(true);
-    const res = await submitWarehouseReturnAction({
-      marketplaceId: selectedMarketplaceId || null,
-      notes,
-      items: validItems,
-    });
-    setIsSubmitting(false);
+    try {
+      const res = await submitWarehouseReturnAction({
+        marketplaceId: selectedMarketplaceId || null,
+        notes,
+        items: validItems,
+      });
 
-    if (res.success) {
-      toast.success(res.message);
-      handleResetDraft();
-      setIsScannerOpen(false);
+      if (res?.success) {
+        // HANYA 1 TOAST SUCCESS saat finalisasi
+        toast.success(res.message || "Pengembalian barang berhasil disimpan!");
+        handleResetDraft(false); // Reset draf tanpa memunculkan Toast reset
+        setIsScannerOpen(false);
 
-      const updatedHistory = await getWarehouseReturnHistoryAction();
-      setHistoryList(updatedHistory || []);
-    } else {
-      toast.error(res.message);
+        try {
+          const updatedHistory = await getWarehouseReturnHistoryAction();
+          if (updatedHistory) setHistoryList(updatedHistory);
+        } catch (fetchErr) {
+          console.error("Gagal memperbarui riwayat:", fetchErr);
+        }
+      } else {
+        toast.error(res?.message || "Gagal menyimpan transaksi.");
+      }
+    } catch (err: any) {
+      console.error("Submit error:", err);
+      toast.error(err.message || "Terjadi kesalahan koneksi server.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -369,7 +382,7 @@ export function WarehouseReturnPageClient({
         </Link>
 
         <button
-          onClick={handleResetDraft}
+          onClick={() => handleResetDraft(true)}
           className="p-2 text-[10px] font-mono text-neutral-400 hover:text-red-400 bg-neutral-900 border border-neutral-800 rounded-lg flex items-center gap-1 transition-colors font-bold"
         >
           <RotateCcw className="w-3.5 h-3.5" /> RESET DRAF
