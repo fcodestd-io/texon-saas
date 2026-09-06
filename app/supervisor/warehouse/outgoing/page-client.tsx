@@ -44,9 +44,7 @@ export function WarehouseOutgoingPageClient({
   // Form State
   const [selectedMarketplaceId, setSelectedMarketplaceId] = useState("");
   const [notes, setNotes] = useState("");
-  const [scannedItemsMap, setScannedItemsMap] = useState
-    Record<string, { productVariantId: string; quantity: number }>
-  >({});
+ const [scannedItemsMap, setScannedItemsMap] = useState<ScannedItemsMap>({});;
 
   // Flag LocalStorage Sync
   const [isLoaded, setIsLoaded] = useState(false);
