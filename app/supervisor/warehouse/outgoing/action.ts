@@ -75,23 +75,35 @@ export async function submitWarehouseOutgoingAction(data: {
     quantity: number;
   }>;
 }) {
+  // 1. Tangkap error Auth agar tidak memicu HTTP 500 Unhandled
+  let session = null;
   try {
-    const session = await auth();
-    const userId = session?.user?.id;
-    const vendorId = (session?.user as any)?.vendorId;
+    session = await auth();
+  } catch (e) {
+    console.error("Auth exception:", e);
+  }
 
-    if (!userId || !vendorId) {
-      return { success: false, message: "Akses ditolak. Sesi tidak valid." };
-    }
+  const userId = session?.user?.id;
+  const vendorId = (session?.user as any)?.vendorId;
 
-    if (!data.items || data.items.length === 0) {
-      return {
-        success: false,
-        message: "Pilih/Scan minimal 1 item barang keluar.",
-      };
-    }
+  if (!userId || !vendorId) {
+    return {
+      success: false,
+      message:
+        "Sesi telah berakhir, silakan refresh halaman dan login kembali.",
+    };
+  }
 
-    const result = await db.transaction(async (tx) => {
+  if (!data.items || data.items.length === 0) {
+    return {
+      success: false,
+      message: "Pilih minimal 1 item barang keluar.",
+    };
+  }
+
+  // 2. Jalankan Mutasi dalam Transaksi Terisolasi
+  try {
+    await db.transaction(async (tx) => {
       const outId = `wout_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       const refNum = `OUT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(
         100 + Math.random() * 900,
@@ -118,7 +130,6 @@ export async function submitWarehouseOutgoingAction(data: {
         const currentStock = parseFloat(v?.stock || "0");
         const newStock = Math.max(0, currentStock - item.quantity);
 
-        // Insert Detail Item
         await tx.insert(warehouseOutgoingItems).values({
           id: `wouti_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           warehouseOutgoingId: outId,
@@ -128,7 +139,6 @@ export async function submitWarehouseOutgoingAction(data: {
           stockAfter: newStock.toString(),
         });
 
-        // Potong Stok Utama
         await tx
           .update(productVariants)
           .set({
@@ -137,7 +147,6 @@ export async function submitWarehouseOutgoingAction(data: {
           })
           .where(eq(productVariants.id, item.productVariantId));
 
-        // Catat Movement Out
         await tx.insert(productStockMovements).values({
           id: `psm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           vendorId,
@@ -151,19 +160,18 @@ export async function submitWarehouseOutgoingAction(data: {
           notes: `Pengeluaran Barang (${refNum})`,
         });
       }
-
-      return {
-        success: true,
-        message: "Pengeluaran barang berhasil disimpan dan stok dipotong!",
-      };
     });
 
-    return result;
-  } catch (error: any) {
-    console.error("Submit Warehouse Outgoing Error:", error);
+    // Kembalikan Plain JSON Object yang Murni Serializable
+    return {
+      success: true,
+      message: "Pengeluaran barang berhasil disimpan!",
+    };
+  } catch (dbError: any) {
+    console.error("Database Execution Error:", dbError);
     return {
       success: false,
-      message: error?.message || "Gagal mencatat barang keluar di server.",
+      message: dbError?.message || "Terjadi kesalahan pada database.",
     };
   }
 }
