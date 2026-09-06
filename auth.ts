@@ -12,6 +12,7 @@ const loginSchema = z.object({
 });
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  trustHost: true, // WAJIB UNTUK PRODUCTION / DEPLOYMENT
   providers: [
     Credentials({
       async authorize(credentials) {
@@ -21,56 +22,59 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         const { username, password } = validatedFields.data;
 
-        // Fetch user sekaligus nama vendor (brandName) dari database
-        const [result] = await db
-          .select({
-            id: users.id,
-            username: users.username,
-            passwordHash: users.passwordHash,
-            role: users.role,
-            vendorId: users.vendorId,
-            vendorName: vendors.brandName,
-          })
-          .from(users)
-          .leftJoin(vendors, eq(users.vendorId, vendors.id))
-          .where(eq(users.username, username))
-          .limit(1);
+        try {
+          const [result] = await db
+            .select({
+              id: users.id,
+              username: users.username,
+              passwordHash: users.passwordHash,
+              role: users.role,
+              vendorId: users.vendorId,
+              vendorName: vendors.brandName,
+            })
+            .from(users)
+            .leftJoin(vendors, eq(users.vendorId, vendors.id))
+            .where(eq(users.username, username))
+            .limit(1);
 
-        if (!result || !result.passwordHash) return null;
+          if (!result || !result.passwordHash) return null;
 
-        const passwordsMatch = await bcrypt.compare(
-          password,
-          result.passwordHash,
-        );
-        if (!passwordsMatch) return null;
+          const passwordsMatch = await bcrypt.compare(
+            password,
+            result.passwordHash,
+          );
+          if (!passwordsMatch) return null;
 
-        return {
-          id: result.id,
-          name: result.username,
-          role: result.role,
-          vendorId: result.vendorId,
-          vendorName: result.vendorName,
-        };
+          return {
+            id: String(result.id),
+            name: String(result.username),
+            role: String(result.role),
+            vendorId: result.vendorId ? String(result.vendorId) : null,
+            vendorName: result.vendorName ? String(result.vendorName) : null,
+          };
+        } catch (error) {
+          console.error("Auth Authorize Error:", error);
+          return null;
+        }
       },
     }),
   ],
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
-        token.role = (user as any).role;
-        token.vendorId = (user as any).vendorId;
-        token.vendorName = (user as any).vendorName;
+        token.role = (user as any).role || "";
+        token.vendorId = (user as any).vendorId || null;
+        token.vendorName = (user as any).vendorName || null;
       }
       return token;
     },
     async session({ session, token }) {
       if (token && session.user) {
-        const userRole = token.role as string;
+        const userRole = (token.role as string) || "";
 
-        (session.user as any).id = token.sub;
+        (session.user as any).id = token.sub || "";
         (session.user as any).role = userRole;
 
-        // Pasang vendorId dan vendorName ke session untuk role non-superadmin
         if (
           userRole === "owner" ||
           userRole === "admin" ||
@@ -94,9 +98,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   },
 });
 
-/**
- * Helper Server-Side untuk mengarahkan path dashboard berdasarkan role
- */
 export function getDashboardPathByRole(role?: string): string {
   switch (role) {
     case "superadmin":
@@ -106,9 +107,9 @@ export function getDashboardPathByRole(role?: string): string {
       return "/dashboard";
     case "spv_production":
       return "/supervisor/production/dashboard";
-      case "spv_warehouse":
+    case "spv_warehouse":
       return "/supervisor/warehouse/dashboard";
-      case "spv_global":
+    case "spv_global":
       return "/supervisor/dashboard";
     default:
       return "/login";
