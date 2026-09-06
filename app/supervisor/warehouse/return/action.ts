@@ -12,17 +12,18 @@ import {
   productStockMovements,
 } from "@/db/schema";
 import { auth } from "@/auth";
-import { eq, desc } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
+import { revalidatePath } from "next/cache";
 
 /**
  * 1. Fetch Master Marketplace & Varian Produk
  */
 export async function getReturnMasterDataAction() {
-  try {
-    const session = await auth();
-    const vendorId = (session?.user as any)?.vendorId;
-    if (!vendorId) return { marketplacesList: [], variantsList: [] };
+  const session = await auth();
+  const vendorId = (session?.user as any)?.vendorId;
+  if (!vendorId) return { marketplacesList: [], variantsList: [] };
 
+  try {
     const [mktList, varList] = await Promise.all([
       db
         .select({ id: marketplaces.id, name: marketplaces.name })
@@ -62,7 +63,7 @@ export async function getReturnMasterDataAction() {
 }
 
 /**
- * 2. Submit Transaksi Retur / Barang Kembali (Atomic Transaction)
+ * 2. Submit Transaksi Retur / Barang Kembali
  */
 export async function submitWarehouseReturnAction(data: {
   marketplaceId?: string | null;
@@ -74,91 +75,93 @@ export async function submitWarehouseReturnAction(data: {
     reason?: string;
   }>;
 }) {
+  const session = await auth();
+  const userId = session?.user?.id;
+  const vendorId = (session?.user as any)?.vendorId;
+
+  if (!userId || !vendorId) {
+    return { success: false, message: "Akses ditolak." };
+  }
+
+  if (!data.items || data.items.length === 0) {
+    return { success: false, message: "Pilih minimal 1 item barang retur." };
+  }
+
   try {
-    const session = await auth();
-    const userId = session?.user?.id;
-    const vendorId = (session?.user as any)?.vendorId;
+    const retId = `wret_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const refNum = `RET-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(
+      100 + Math.random() * 900,
+    )}`;
 
-    if (!userId || !vendorId) {
-      return { success: false, message: "Akses ditolak. Sesi tidak valid." };
-    }
+    await db.insert(warehouseReturns).values({
+      id: retId,
+      vendorId,
+      userId,
+      marketplaceId: data.marketplaceId || null,
+      referenceNumber: refNum,
+      notes: data.notes || null,
+    });
 
-    if (!data.items || data.items.length === 0) {
-      return { success: false, message: "Pilih minimal 1 item barang retur." };
-    }
+    for (const item of data.items) {
+      if (item.quantity <= 0) continue;
 
-    const result = await db.transaction(async (tx) => {
-      const retId = `wret_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      const refNum = `RET-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(
-        100 + Math.random() * 900,
-      )}`;
+      const [v] = await db
+        .select({ stock: productVariants.stock })
+        .from(productVariants)
+        .where(eq(productVariants.id, item.productVariantId))
+        .limit(1);
 
-      await tx.insert(warehouseReturns).values({
-        id: retId,
-        vendorId,
-        userId,
-        marketplaceId: data.marketplaceId || null,
-        referenceNumber: refNum,
-        notes: data.notes || null,
+      const currentStock = parseFloat(v?.stock || "0");
+
+      // Jika RESTOCK (Bagus), tambahkan ke stok fisik. Jika DEFECTIVE (Cacat), stok fisik tidak berubah.
+      const newStock =
+        item.returnType === "RESTOCK"
+          ? currentStock + item.quantity
+          : currentStock;
+
+      await db.insert(warehouseReturnItems).values({
+        id: `wreti_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        warehouseReturnId: retId,
+        productVariantId: item.productVariantId,
+        returnType: item.returnType,
+        quantity: item.quantity.toString(),
+        stockBefore: currentStock.toString(),
+        stockAfter: newStock.toString(),
+        reason: item.reason || null,
       });
 
-      for (const item of data.items) {
-        if (item.quantity <= 0) continue;
+      // Update stok fisik di master jika tipe RESTOCK
+      if (item.returnType === "RESTOCK") {
+        await db
+          .update(productVariants)
+          .set({
+            stock: newStock.toString(),
+            updatedAt: new Date(),
+          })
+          .where(eq(productVariants.id, item.productVariantId));
 
-        const [v] = await tx
-          .select({ stock: productVariants.stock })
-          .from(productVariants)
-          .where(eq(productVariants.id, item.productVariantId))
-          .limit(1);
-
-        const currentStock = parseFloat(v?.stock || "0");
-        const newStock =
-          item.returnType === "RESTOCK"
-            ? currentStock + item.quantity
-            : currentStock;
-
-        await tx.insert(warehouseReturnItems).values({
-          id: `wreti_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          warehouseReturnId: retId,
+        // Catat di Kartu Stok
+        await db.insert(productStockMovements).values({
+          id: `psm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          vendorId,
           productVariantId: item.productVariantId,
-          returnType: item.returnType,
+          type: "in",
           quantity: item.quantity.toString(),
           stockBefore: currentStock.toString(),
           stockAfter: newStock.toString(),
-          reason: item.reason || null,
+          referenceType: "WAREHOUSE_RETURN",
+          referenceId: retId,
+          notes: `Retur Etalase (${refNum}) - ${item.reason || "Kondisi Baik"}`,
         });
-
-        if (item.returnType === "RESTOCK") {
-          await tx
-            .update(productVariants)
-            .set({
-              stock: newStock.toString(),
-              updatedAt: new Date(),
-            })
-            .where(eq(productVariants.id, item.productVariantId));
-
-          await tx.insert(productStockMovements).values({
-            id: `psm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            vendorId,
-            productVariantId: item.productVariantId,
-            type: "return",
-            quantity: item.quantity.toString(),
-            stockBefore: currentStock.toString(),
-            stockAfter: newStock.toString(),
-            referenceType: "WAREHOUSE_RETURN",
-            referenceId: retId,
-            notes: `Retur Etalase (${refNum}) - ${item.reason || "Kondisi Baik"}`,
-          });
-        }
       }
+    }
 
-      return {
-        success: true,
-        message: "Pencatatan barang retur berhasil disimpan!",
-      };
-    });
-
-    return result;
+    revalidatePath("/supervisor/warehouse/return");
+    revalidatePath("/supervisor/warehouse/stock-adjustment");
+    return {
+      success: true,
+      message: "Pencatatan barang retur berhasil disimpan!",
+    };
   } catch (error: any) {
     console.error("Submit Warehouse Return Error:", error);
     return {
@@ -172,11 +175,11 @@ export async function submitWarehouseReturnAction(data: {
  * 3. Fetch Riwayat Retur
  */
 export async function getWarehouseReturnHistoryAction() {
-  try {
-    const session = await auth();
-    const vendorId = (session?.user as any)?.vendorId;
-    if (!vendorId) return [];
+  const session = await auth();
+  const vendorId = (session?.user as any)?.vendorId;
+  if (!vendorId) return [];
 
+  try {
     const history = await db
       .select({
         id: warehouseReturns.id,
