@@ -2,7 +2,10 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { getWarehouseReturnHistoryAction } from "./action";
+import {
+  submitWarehouseReturnAction,
+  getWarehouseReturnHistoryAction,
+} from "./action";
 import { toast } from "sonner";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import {
@@ -30,14 +33,6 @@ import {
 const LOCAL_STORAGE_KEY = "SPV_WAREHOUSE_RETURN_DRAFT_V1";
 const SCANNER_ELEMENT_ID = "html5qrcode-return-stream";
 
-type ReturnItem = {
-  productVariantId: string;
-  returnType: "RESTOCK" | "DEFECTIVE";
-  quantity: number;
-  reason: string;
-};
-type ReturnItemsMap = Record<string, ReturnItem>;
-
 export function WarehouseReturnPageClient({
   initialMarketplaces = [],
   initialVariants = [],
@@ -54,7 +49,17 @@ export function WarehouseReturnPageClient({
   // Form State
   const [selectedMarketplaceId, setSelectedMarketplaceId] = useState("");
   const [notes, setNotes] = useState("");
-  const [returnItemsMap, setReturnItemsMap] = useState<ReturnItemsMap>({});
+  const [returnItemsMap, setReturnItemsMap] = useState<
+    Record<
+      string,
+      {
+        productVariantId: string;
+        returnType: "RESTOCK" | "DEFECTIVE";
+        quantity: number;
+        reason: string;
+      }
+    >
+  >({});
 
   const [isLoaded, setIsLoaded] = useState(false);
 
@@ -62,9 +67,8 @@ export function WarehouseReturnPageClient({
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
-  // Scanner State
+  // Scanner State & Refs
   const [isScannerOpen, setIsScannerOpen] = useState(false);
-  const [isClosingScanner, setIsClosingScanner] = useState(false);
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
 
   // Ref Flag untuk Mengontrol Pelatuk Tombol Scan
@@ -107,6 +111,26 @@ export function WarehouseReturnPageClient({
     }
   }, [selectedMarketplaceId, notes, returnItemsMap, isLoaded]);
 
+  // Fungsi Pembantu Berhenti Kamera Secara Aman (Pencegah Bug Crash saat Tutup)
+  const stopScannerSafely = async () => {
+    canScanRef.current = false;
+    setIsReadyToScan(false);
+
+    if (html5QrcodeRef.current) {
+      try {
+        if (html5QrcodeRef.current.isScanning) {
+          await html5QrcodeRef.current.stop();
+        }
+        await html5QrcodeRef.current.clear();
+      } catch (err) {
+        // Tangkap error jika kamera ditutup paksa / DOM sudah ter-unmount
+        console.warn("Pemberhentian scanner ditangani secara aman:", err);
+      } finally {
+        html5QrcodeRef.current = null;
+      }
+    }
+  };
+
   // Reset Draft LocalStorage
   const handleResetDraft = (showToast = true) => {
     setSelectedMarketplaceId("");
@@ -120,6 +144,16 @@ export function WarehouseReturnPageClient({
     }
     if (showToast) {
       toast.info("Draf barang kembali berhasil dibersihkan!");
+    }
+  };
+
+  // Toggle Buka/Tutup Scanner Kamera
+  const handleToggleScanner = async () => {
+    if (isScannerOpen) {
+      await stopScannerSafely();
+      setIsScannerOpen(false);
+    } else {
+      setIsScannerOpen(true);
     }
   };
 
@@ -138,7 +172,6 @@ export function WarehouseReturnPageClient({
 
       toast.success(
         `Ditambahkan: ${matched.productName} (${matched.color} - ${matched.size})`,
-        { id: "scan-result" },
       );
       setReturnItemsMap((prev) => {
         const current = prev[matched.id];
@@ -155,104 +188,100 @@ export function WarehouseReturnPageClient({
       setSearchQuery("");
       setIsSearchOpen(false);
     } else {
-      toast.error(`SKU / Barcode "${scannedCode}" tidak ditemukan!`, {
-        id: "scan-result",
-      });
+      toast.error(`SKU / Barcode "${scannedCode}" tidak ditemukan!`);
     }
   };
 
-  // Helper: tutup scanner dengan aman — stop() kamera dulu sampai selesai,
-  // baru unmount elemen scanner-nya. Ini yang memperbaiki race condition
-  // penyebab "this page couldn't load".
-  const closeScannerSafely = async () => {
-    if (!isScannerOpen) return;
-    setIsClosingScanner(true);
-    try {
-      if (html5QrcodeRef.current?.isScanning) {
-        await html5QrcodeRef.current.stop();
-      }
-    } catch (err) {
-      console.error("Gagal menghentikan kamera:", err);
-    } finally {
-      setIsScannerOpen(false);
-      setIsClosingScanner(false);
-    }
-  };
-
-  // 3. NATIVE STREAM CONTROLLER WITH TRIGGER GUARD
+  // 3. NATIVE STREAM CONTROLLER (SAFE INITIALIZATION & CLEANUP)
   useEffect(() => {
+    let isMounted = true;
+
     if (!isScannerOpen) {
-      canScanRef.current = false;
-      setIsReadyToScan(false);
-      if (html5QrcodeRef.current?.isScanning) {
-        html5QrcodeRef.current.stop().catch(console.error);
-      }
+      stopScannerSafely();
       return;
     }
 
-    const html5Qrcode = new Html5Qrcode(SCANNER_ELEMENT_ID, {
-      formatsToSupport: [
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.EAN_13,
-        Html5QrcodeSupportedFormats.UPC_A,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.QR_CODE,
-      ],
-      verbose: false,
-    });
+    const startScanner = async () => {
+      // Pastikan instance lama dibersihkan dulu jika ada
+      await stopScannerSafely();
 
-    html5QrcodeRef.current = html5Qrcode;
+      // Cek ulang apakah elemen DOM penampung sudah tersedia
+      const element = document.getElementById(SCANNER_ELEMENT_ID);
+      if (!element || !isMounted) return;
 
-    html5Qrcode
-      .start(
-        { facingMode: "environment" },
-        { fps: 15, qrbox: { width: 260, height: 130 } },
-        (decodedText) => {
-          if (canScanRef.current) {
-            canScanRef.current = false;
-            setIsReadyToScan(false);
-            handleBarcodeScanned(decodedText.trim());
+      try {
+        const html5Qrcode = new Html5Qrcode(SCANNER_ELEMENT_ID, {
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.QR_CODE,
+          ],
+          verbose: false,
+        });
+
+        html5QrcodeRef.current = html5Qrcode;
+
+        await html5Qrcode.start(
+          { facingMode: "environment" },
+          { fps: 15, qrbox: { width: 260, height: 130 } },
+          (decodedText) => {
+            if (canScanRef.current) {
+              canScanRef.current = false;
+              setIsReadyToScan(false);
+              handleBarcodeScanned(decodedText.trim());
+            }
+          },
+          () => {},
+        );
+      } catch (err) {
+        console.warn(
+          "Gagal membuka kamera belakang, mencoba kamera depan:",
+          err,
+        );
+        if (!isMounted) return;
+
+        try {
+          if (html5QrcodeRef.current) {
+            await html5QrcodeRef.current.start(
+              { facingMode: "user" },
+              { fps: 15, qrbox: { width: 260, height: 130 } },
+              (decodedText) => {
+                if (canScanRef.current) {
+                  canScanRef.current = false;
+                  setIsReadyToScan(false);
+                  handleBarcodeScanned(decodedText.trim());
+                }
+              },
+              () => {},
+            );
           }
-        },
-        () => {},
-      )
-      .catch((err) => {
-        console.error("Gagal kamera belakang:", err);
-        html5Qrcode
-          .start(
-            { facingMode: "user" },
-            { fps: 15, qrbox: { width: 260, height: 130 } },
-            (decodedText) => {
-              if (canScanRef.current) {
-                canScanRef.current = false;
-                setIsReadyToScan(false);
-                handleBarcodeScanned(decodedText.trim());
-              }
-            },
-            () => {},
-          )
-          .catch(() => {
-            toast.error("Gagal mengakses kamera.");
-            setIsScannerOpen(false);
-          });
-      });
+        } catch (fallbackErr) {
+          console.error("Gagal total mengakses kamera:", fallbackErr);
+          toast.error("Gagal mengakses kamera. Periksa izin akses browser.");
+          if (isMounted) setIsScannerOpen(false);
+        }
+      }
+    };
+
+    // Jalankan scanner dengan jeda kecil untuk memastikan DOM dirender sempurna
+    const timeoutId = setTimeout(() => {
+      startScanner();
+    }, 100);
 
     return () => {
-      canScanRef.current = false;
-      if (html5Qrcode.isScanning) {
-        html5Qrcode.stop().catch(console.error);
-      }
+      isMounted = false;
+      clearTimeout(timeoutId);
+      stopScannerSafely();
     };
   }, [isScannerOpen]);
 
   // Handler Pelatuk Tombol Scan
   const handleTriggerManualScan = () => {
-    if (canScanRef.current) return; // cegah tap ganda saat scanner masih aktif
-
     canScanRef.current = true;
     setIsReadyToScan(true);
     toast.info("Pemindai Aktif! Arahkan kamera ke barcode...", {
-      id: "scan-trigger",
       duration: 1200,
     });
 
@@ -331,7 +360,7 @@ export function WarehouseReturnPageClient({
     });
   };
 
-  // Submit & Finalisasi Transaksi Aman
+  // Submit Transaksi Aman
   const handleSubmit = async () => {
     const validItems = Object.values(returnItemsMap).filter(
       (i) => i.quantity > 0,
@@ -344,20 +373,19 @@ export function WarehouseReturnPageClient({
 
     setIsSubmitting(true);
     try {
-      const res = await fetch("/api/warehouse/return", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          marketplaceId: selectedMarketplaceId || null,
-          notes,
-          items: validItems,
-        }),
-      }).then((r) => r.json());
+      // Tutup kamera dengan aman sebelum mengirim data
+      await stopScannerSafely();
+      setIsScannerOpen(false);
+
+      const res = await submitWarehouseReturnAction({
+        marketplaceId: selectedMarketplaceId || null,
+        notes,
+        items: validItems,
+      });
 
       if (res && res.success) {
         toast.success(res.message || "Pengembalian barang berhasil disimpan!");
         handleResetDraft(false);
-        await closeScannerSafely(); // stop kamera dulu sebelum unmount elemen
 
         try {
           const updatedHistory = await getWarehouseReturnHistoryAction();
@@ -372,7 +400,9 @@ export function WarehouseReturnPageClient({
       }
     } catch (err: any) {
       console.error("Submit error caught:", err);
-      toast.error(err?.message || "Terjadi masalah server. Silakan coba lagi.");
+      toast.error(
+        err?.message || "Terjadi kesalahan server. Silakan coba lagi.",
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -465,25 +495,15 @@ export function WarehouseReturnPageClient({
 
         {/* Toggle Webcam Scanner */}
         <button
-          onClick={() => {
-            if (isScannerOpen) {
-              closeScannerSafely();
-            } else {
-              setIsScannerOpen(true);
-            }
-          }}
-          disabled={isClosingScanner}
-          className={`w-full py-2.5 rounded-lg flex items-center justify-center gap-2 uppercase font-mono font-bold transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+          type="button"
+          onClick={handleToggleScanner}
+          className={`w-full py-2.5 rounded-lg flex items-center justify-center gap-2 uppercase font-mono font-bold transition-colors ${
             isScannerOpen
               ? "bg-red-500 hover:bg-red-400 text-neutral-950"
               : "bg-amber-500 hover:bg-amber-400 text-neutral-950"
           }`}
         >
-          {isClosingScanner ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" /> MENUTUP KAMERA...
-            </>
-          ) : isScannerOpen ? (
+          {isScannerOpen ? (
             <>
               <CameraOff className="w-4 h-4" /> TUTUP WEBCAM SCANNER
             </>
@@ -500,14 +520,14 @@ export function WarehouseReturnPageClient({
         <div className="relative bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden p-2 space-y-2">
           <div
             id={SCANNER_ELEMENT_ID}
-            className="w-full rounded-lg overflow-hidden bg-neutral-900 border border-neutral-800 [&_video]:w-full [&_video]:h-full [&_video]:object-cover"
+            className="w-full rounded-lg overflow-hidden bg-neutral-900 border border-neutral-800 [&_video]:w-full [&_video]:h-full [&_video]:object-cover min-h-[200px]"
           ></div>
 
           {/* Tombol Pelatuk Scan Manual */}
           <button
+            type="button"
             onClick={handleTriggerManualScan}
-            disabled={isReadyToScan}
-            className={`w-full py-3 font-mono font-bold rounded-lg flex items-center justify-center gap-2 uppercase text-xs shadow-lg transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
+            className={`w-full py-3 font-mono font-bold rounded-lg flex items-center justify-center gap-2 uppercase text-xs shadow-lg transition-all ${
               isReadyToScan
                 ? "bg-emerald-500 text-neutral-950 animate-pulse"
                 : "bg-amber-500 hover:bg-amber-400 text-neutral-950"
@@ -548,6 +568,7 @@ export function WarehouseReturnPageClient({
           />
           {searchQuery && (
             <button
+              type="button"
               onClick={() => {
                 setSearchQuery("");
                 setIsSearchOpen(false);
@@ -570,6 +591,7 @@ export function WarehouseReturnPageClient({
               filteredVariants.map((v) => (
                 <button
                   key={v.id}
+                  type="button"
                   onClick={() => handleBarcodeScanned(v.sku)}
                   className="w-full p-2 hover:bg-neutral-900 text-left rounded flex justify-between items-center transition-colors border-b border-neutral-900 last:border-0"
                 >
@@ -620,6 +642,7 @@ export function WarehouseReturnPageClient({
                 </div>
 
                 <button
+                  type="button"
                   onClick={() => handleRemoveItem(item.id)}
                   className="text-red-400 hover:text-red-300 p-1"
                 >
@@ -682,6 +705,7 @@ export function WarehouseReturnPageClient({
                   </span>
                   <div className="flex items-center justify-center gap-1 mt-0.5">
                     <button
+                      type="button"
                       onClick={() => handleDecrement(item.id)}
                       className="p-0.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 rounded"
                     >
@@ -691,6 +715,7 @@ export function WarehouseReturnPageClient({
                       {item.quantity}
                     </span>
                     <button
+                      type="button"
                       onClick={() => handleIncrement(item.id)}
                       className="p-0.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 rounded"
                     >
@@ -720,6 +745,7 @@ export function WarehouseReturnPageClient({
 
         {returnListUI.length > 0 && (
           <button
+            type="button"
             onClick={handleSubmit}
             disabled={isSubmitting}
             className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold rounded-xl flex items-center justify-center gap-2 uppercase tracking-wider text-xs font-mono disabled:opacity-50 transition-colors shadow-lg mt-2"
@@ -762,6 +788,7 @@ export function WarehouseReturnPageClient({
                 className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden font-mono"
               >
                 <button
+                  type="button"
                   onClick={() => setOpenHistoryId(isOpen ? null : hist.id)}
                   className="w-full p-3 flex items-center justify-between text-left hover:bg-neutral-800/40 transition-colors"
                 >
