@@ -12,18 +12,17 @@ import {
   productStockMovements,
 } from "@/db/schema";
 import { auth } from "@/auth";
-import { eq, and, desc } from "drizzle-orm";
-import { revalidatePath } from "next/cache";
+import { eq, desc } from "drizzle-orm";
 
 /**
  * 1. Fetch Master Marketplace & Master Varian SKU/Barcode
  */
 export async function getOutgoingMasterDataAction() {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
-  if (!vendorId) return { marketplacesList: [], variantsList: [] };
-
   try {
+    const session = await auth();
+    const vendorId = (session?.user as any)?.vendorId;
+    if (!vendorId) return { marketplacesList: [], variantsList: [] };
+
     const [mktList, varList] = await Promise.all([
       db
         .select({
@@ -66,7 +65,7 @@ export async function getOutgoingMasterDataAction() {
 }
 
 /**
- * 2. Submit Transaksi Barang Keluar
+ * 2. Submit Transaksi Barang Keluar (Atomic Transaction)
  */
 export async function submitWarehouseOutgoingAction(data: {
   marketplaceId?: string | null;
@@ -76,94 +75,95 @@ export async function submitWarehouseOutgoingAction(data: {
     quantity: number;
   }>;
 }) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  const vendorId = (session?.user as any)?.vendorId;
-
-  if (!userId || !vendorId) {
-    return { success: false, message: "Akses ditolak." };
-  }
-
-  if (!data.items || data.items.length === 0) {
-    return {
-      success: false,
-      message: "Pilih/Scan minimal 1 item barang keluar.",
-    };
-  }
-
   try {
-    const outId = `wout_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const refNum = `OUT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(
-      100 + Math.random() * 900,
-    )}`;
+    const session = await auth();
+    const userId = session?.user?.id;
+    const vendorId = (session?.user as any)?.vendorId;
 
-    await db.insert(warehouseOutgoings).values({
-      id: outId,
-      vendorId,
-      userId,
-      marketplaceId: data.marketplaceId || null,
-      referenceNumber: refNum,
-      notes: data.notes || null,
-    });
-
-    for (const item of data.items) {
-      if (item.quantity <= 0) continue;
-
-      // Fetch stok terkini
-      const [v] = await db
-        .select({ stock: productVariants.stock })
-        .from(productVariants)
-        .where(eq(productVariants.id, item.productVariantId))
-        .limit(1);
-
-      const currentStock = parseFloat(v?.stock || "0");
-      const newStock = Math.max(0, currentStock - item.quantity);
-
-      // Insert Detail Outgoing Item
-      await db.insert(warehouseOutgoingItems).values({
-        id: `wouti_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        warehouseOutgoingId: outId,
-        productVariantId: item.productVariantId,
-        quantity: item.quantity.toString(),
-        stockBefore: currentStock.toString(),
-        stockAfter: newStock.toString(),
-      });
-
-      // Update Potong Stok Utama
-      await db
-        .update(productVariants)
-        .set({
-          stock: newStock.toString(),
-          updatedAt: new Date(),
-        })
-        .where(eq(productVariants.id, item.productVariantId));
-
-      // Record Kartu Stok Movement (OUT)
-      await db.insert(productStockMovements).values({
-        id: `psm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        vendorId,
-        productVariantId: item.productVariantId,
-        type: "out",
-        quantity: (-item.quantity).toString(),
-        stockBefore: currentStock.toString(),
-        stockAfter: newStock.toString(),
-        referenceType: "WAREHOUSE_OUTGOING",
-        referenceId: outId,
-        notes: `Pengeluaran Barang (${refNum})`,
-      });
+    if (!userId || !vendorId) {
+      return { success: false, message: "Akses ditolak. Sesi tidak valid." };
     }
 
-    revalidatePath("/supervisor/warehouse/outgoing");
-    revalidatePath("/supervisor/warehouse/stock-adjustment");
-    return {
-      success: true,
-      message: "Pengeluaran barang berhasil disimpan dan stok dipotong!",
-    };
+    if (!data.items || data.items.length === 0) {
+      return {
+        success: false,
+        message: "Pilih/Scan minimal 1 item barang keluar.",
+      };
+    }
+
+    const result = await db.transaction(async (tx) => {
+      const outId = `wout_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const refNum = `OUT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(
+        100 + Math.random() * 900,
+      )}`;
+
+      await tx.insert(warehouseOutgoings).values({
+        id: outId,
+        vendorId,
+        userId,
+        marketplaceId: data.marketplaceId || null,
+        referenceNumber: refNum,
+        notes: data.notes || null,
+      });
+
+      for (const item of data.items) {
+        if (item.quantity <= 0) continue;
+
+        const [v] = await tx
+          .select({ stock: productVariants.stock })
+          .from(productVariants)
+          .where(eq(productVariants.id, item.productVariantId))
+          .limit(1);
+
+        const currentStock = parseFloat(v?.stock || "0");
+        const newStock = Math.max(0, currentStock - item.quantity);
+
+        // Insert Detail Item
+        await tx.insert(warehouseOutgoingItems).values({
+          id: `wouti_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          warehouseOutgoingId: outId,
+          productVariantId: item.productVariantId,
+          quantity: item.quantity.toString(),
+          stockBefore: currentStock.toString(),
+          stockAfter: newStock.toString(),
+        });
+
+        // Potong Stok Utama
+        await tx
+          .update(productVariants)
+          .set({
+            stock: newStock.toString(),
+            updatedAt: new Date(),
+          })
+          .where(eq(productVariants.id, item.productVariantId));
+
+        // Catat Movement Out
+        await tx.insert(productStockMovements).values({
+          id: `psm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          vendorId,
+          productVariantId: item.productVariantId,
+          type: "out",
+          quantity: (-item.quantity).toString(),
+          stockBefore: currentStock.toString(),
+          stockAfter: newStock.toString(),
+          referenceType: "WAREHOUSE_OUTGOING",
+          referenceId: outId,
+          notes: `Pengeluaran Barang (${refNum})`,
+        });
+      }
+
+      return {
+        success: true,
+        message: "Pengeluaran barang berhasil disimpan dan stok dipotong!",
+      };
+    });
+
+    return result;
   } catch (error: any) {
     console.error("Submit Warehouse Outgoing Error:", error);
     return {
       success: false,
-      message: error?.message || "Gagal mencatat barang keluar.",
+      message: error?.message || "Gagal mencatat barang keluar di server.",
     };
   }
 }
@@ -172,11 +172,11 @@ export async function submitWarehouseOutgoingAction(data: {
  * 3. Fetch Riwayat Transaksi Barang Keluar
  */
 export async function getWarehouseOutgoingHistoryAction() {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
-  if (!vendorId) return [];
-
   try {
+    const session = await auth();
+    const vendorId = (session?.user as any)?.vendorId;
+    if (!vendorId) return [];
+
     const history = await db
       .select({
         id: warehouseOutgoings.id,

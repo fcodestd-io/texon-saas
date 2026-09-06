@@ -42,9 +42,9 @@ export function WarehouseReturnPageClient({
   initialVariants: any[];
   initialHistory: any[];
 }) {
-  const [marketplaces] = useState<any[]>(initialMarketplaces);
-  const [variants] = useState<any[]>(initialVariants);
-  const [historyList, setHistoryList] = useState<any[]>(initialHistory);
+  const [marketplaces] = useState<any[]>(initialMarketplaces || []);
+  const [variants] = useState<any[]>(initialVariants || []);
+  const [historyList, setHistoryList] = useState<any[]>(initialHistory || []);
 
   // Form State
   const [selectedMarketplaceId, setSelectedMarketplaceId] = useState("");
@@ -111,13 +111,17 @@ export function WarehouseReturnPageClient({
     }
   }, [selectedMarketplaceId, notes, returnItemsMap, isLoaded]);
 
-  // Reset Draft LocalStorage (Parameter showToast fleksibel untuk cegah double toast)
+  // Reset Draft LocalStorage
   const handleResetDraft = (showToast = true) => {
     setSelectedMarketplaceId("");
     setNotes("");
     setReturnItemsMap({});
     setSearchQuery("");
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    try {
+      localStorage.removeItem(LOCAL_STORAGE_KEY);
+    } catch (e) {
+      console.error(e);
+    }
     if (showToast) {
       toast.info("Draf barang kembali berhasil dibersihkan!");
     }
@@ -307,7 +311,7 @@ export function WarehouseReturnPageClient({
     });
   };
 
-  // Submit & Finalisasi Transaksi
+  // Submit & Finalisasi Transaksi Aman
   const handleSubmit = async () => {
     const validItems = Object.values(returnItemsMap).filter(
       (i) => i.quantity > 0,
@@ -326,24 +330,25 @@ export function WarehouseReturnPageClient({
         items: validItems,
       });
 
-      if (res?.success) {
-        // HANYA 1 TOAST SUCCESS saat finalisasi
+      if (res && res.success) {
         toast.success(res.message || "Pengembalian barang berhasil disimpan!");
-        handleResetDraft(false); // Reset draf tanpa memunculkan Toast reset
+        handleResetDraft(false);
         setIsScannerOpen(false);
 
         try {
           const updatedHistory = await getWarehouseReturnHistoryAction();
-          if (updatedHistory) setHistoryList(updatedHistory);
+          if (Array.isArray(updatedHistory)) {
+            setHistoryList(updatedHistory);
+          }
         } catch (fetchErr) {
-          console.error("Gagal memperbarui riwayat:", fetchErr);
+          console.error("Gagal mengambil riwayat terbaru:", fetchErr);
         }
       } else {
         toast.error(res?.message || "Gagal menyimpan transaksi.");
       }
     } catch (err: any) {
-      console.error("Submit error:", err);
-      toast.error(err.message || "Terjadi kesalahan koneksi server.");
+      console.error("Submit error caught:", err);
+      toast.error(err?.message || "Terjadi masalah server. Silakan coba lagi.");
     } finally {
       setIsSubmitting(false);
     }
@@ -354,7 +359,7 @@ export function WarehouseReturnPageClient({
     .map((item) => {
       const vObj = variants.find((v) => v.id === item.productVariantId);
       if (!vObj) return null;
-      const stockBefore = vObj.stock;
+      const stockBefore = vObj.stock || 0;
       const stockAfter =
         item.returnType === "RESTOCK"
           ? stockBefore + item.quantity
@@ -708,9 +713,10 @@ export function WarehouseReturnPageClient({
           </p>
         ) : (
           historyList.map((hist) => {
+            if (!hist) return null;
             const isOpen = openHistoryId === hist.id;
-            const totalQtyRet = hist.items.reduce(
-              (sum: number, it: any) => sum + parseFloat(it.quantity || "0"),
+            const totalQtyRet = (hist.items || []).reduce(
+              (sum: number, it: any) => sum + parseFloat(it?.quantity || "0"),
               0,
             );
 
@@ -733,10 +739,12 @@ export function WarehouseReturnPageClient({
                     </span>
                     <span className="text-[9px] text-neutral-500 flex items-center gap-1 pt-0.5">
                       <Clock className="w-3 h-3 text-neutral-600" />
-                      {new Date(hist.createdAt).toLocaleString("id-ID", {
-                        dateStyle: "medium",
-                        timeStyle: "short",
-                      })}
+                      {hist.createdAt
+                        ? new Date(hist.createdAt).toLocaleString("id-ID", {
+                            dateStyle: "medium",
+                            timeStyle: "short",
+                          })
+                        : "-"}
                     </span>
                   </div>
 
@@ -767,7 +775,7 @@ export function WarehouseReturnPageClient({
 
                     {hist.items?.map((it: any) => (
                       <div
-                        key={it.id}
+                        key={it.id || Math.random()}
                         className="p-2 bg-neutral-900 border border-neutral-800/80 rounded flex justify-between items-center text-neutral-200"
                       >
                         <div>
@@ -801,7 +809,7 @@ export function WarehouseReturnPageClient({
                         </div>
 
                         <span className="font-bold text-amber-400">
-                          +{parseFloat(it.quantity)} SET
+                          +{parseFloat(it.quantity || "0")} SET
                         </span>
                       </div>
                     ))}
