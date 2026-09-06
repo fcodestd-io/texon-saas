@@ -28,6 +28,9 @@ import {
 const LOCAL_STORAGE_KEY = "SPV_WAREHOUSE_OUTGOING_DRAFT_V1";
 const SCANNER_ELEMENT_ID = "html5qrcode-webcam-stream";
 
+type ScannedItem = { productVariantId: string; quantity: number };
+type ScannedItemsMap = Record<string, ScannedItem>;
+
 export function WarehouseOutgoingPageClient({
   initialMarketplaces = [],
   initialVariants = [],
@@ -44,7 +47,7 @@ export function WarehouseOutgoingPageClient({
   // Form State
   const [selectedMarketplaceId, setSelectedMarketplaceId] = useState("");
   const [notes, setNotes] = useState("");
- const [scannedItemsMap, setScannedItemsMap] = useState<ScannedItemsMap>({});;
+  const [scannedItemsMap, setScannedItemsMap] = useState<ScannedItemsMap>({});
 
   // Flag LocalStorage Sync
   const [isLoaded, setIsLoaded] = useState(false);
@@ -55,6 +58,7 @@ export function WarehouseOutgoingPageClient({
 
   // Scanner State (html5-qrcode)
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isClosingScanner, setIsClosingScanner] = useState(false);
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
 
   // Ref Flag untuk Mengontrol Pelatuk Tombol Scan
@@ -149,12 +153,33 @@ export function WarehouseOutgoingPageClient({
     }
   };
 
+  // Helper: tutup scanner dengan aman — stop() kamera dulu sampai selesai,
+  // baru unmount elemen scanner-nya (via setIsScannerOpen(false)).
+  // Ini yang memperbaiki race condition penyebab "this page couldn't load".
+  const closeScannerSafely = async () => {
+    if (!isScannerOpen) return;
+    setIsClosingScanner(true);
+    try {
+      if (html5QrcodeRef.current?.isScanning) {
+        await html5QrcodeRef.current.stop();
+      }
+    } catch (err) {
+      console.error("Gagal menghentikan kamera:", err);
+    } finally {
+      setIsScannerOpen(false);
+      setIsClosingScanner(false);
+    }
+  };
+
   // 3. NATIVE STREAM CONTROLLER WITH TRIGGER GUARD
   useEffect(() => {
     if (!isScannerOpen) {
       canScanRef.current = false;
       setIsReadyToScan(false);
-      if (html5QrcodeRef.current && html5QrcodeRef.current.isScanning) {
+      // Safety-net: kalau scanner ditutup lewat jalur lain (mis. unmount
+      // komponen/navigasi keluar halaman) dan belum sempat di-stop lewat
+      // closeScannerSafely, stop() di sini akan no-op kalau memang sudah berhenti.
+      if (html5QrcodeRef.current?.isScanning) {
         html5QrcodeRef.current.stop().catch(console.error);
       }
       return;
@@ -313,7 +338,7 @@ export function WarehouseOutgoingPageClient({
       if (res?.success) {
         toast.success(res.message);
         handleResetDraft(false); // Reset draft tanpa toast ganda
-        setIsScannerOpen(false);
+        await closeScannerSafely(); // stop kamera dulu sebelum unmount elemen
 
         // Ambil histori secara terpisah & aman
         const updatedHistory = await getWarehouseOutgoingHistoryAction();
@@ -415,14 +440,25 @@ export function WarehouseOutgoingPageClient({
 
         {/* Toggle On-Page Camera Scanner */}
         <button
-          onClick={() => setIsScannerOpen(!isScannerOpen)}
-          className={`w-full py-2.5 rounded-lg flex items-center justify-center gap-2 uppercase font-mono font-bold transition-colors ${
+          onClick={() => {
+            if (isScannerOpen) {
+              closeScannerSafely();
+            } else {
+              setIsScannerOpen(true);
+            }
+          }}
+          disabled={isClosingScanner}
+          className={`w-full py-2.5 rounded-lg flex items-center justify-center gap-2 uppercase font-mono font-bold transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
             isScannerOpen
               ? "bg-red-500 hover:bg-red-400 text-neutral-950"
               : "bg-blue-600 hover:bg-blue-500 text-neutral-100"
           }`}
         >
-          {isScannerOpen ? (
+          {isClosingScanner ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" /> MENUTUP KAMERA...
+            </>
+          ) : isScannerOpen ? (
             <>
               <CameraOff className="w-4 h-4" /> TUTUP WEBCAM SCANNER
             </>
