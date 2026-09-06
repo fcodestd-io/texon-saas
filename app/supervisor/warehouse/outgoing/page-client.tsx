@@ -60,13 +60,16 @@ export function WarehouseOutgoingPageClient({
 
   // Scanner State (html5-qrcode)
   const [isScannerOpen, setIsScannerOpen] = useState(false);
-  const [isCapturing, setIsCapturing] = useState(false);
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
+
+  // Ref Flag untuk Mengontrol Pelatuk Tombol Scan
+  const canScanRef = useRef<boolean>(false);
+  const [isReadyToScan, setIsReadyToScan] = useState(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
 
-  // 1. DRAFT LOCALSTORAGE PERSISTENCE (Load Pertama)
+  // 1. DRAFT LOCALSTORAGE PERSISTENCE
   useEffect(() => {
     try {
       const savedDraft = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -118,6 +121,11 @@ export function WarehouseOutgoingPageClient({
     );
 
     if (matched) {
+      // Vibrate Feedback jika didukung HP
+      if (typeof window !== "undefined" && window.navigator?.vibrate) {
+        window.navigator.vibrate(100);
+      }
+
       toast.success(
         `Berhasil scan: ${matched.productName} (${matched.color} - ${matched.size})`,
       );
@@ -138,9 +146,11 @@ export function WarehouseOutgoingPageClient({
     }
   };
 
-  // 3. MANUAL TRIGGER SCANNER CONTROLLER (Manual Trigger / No Auto Scan)
+  // 3. NATIVE STREAM CONTROLLER WITH TRIGGER GUARD
   useEffect(() => {
     if (!isScannerOpen) {
+      canScanRef.current = false;
+      setIsReadyToScan(false);
       if (html5QrcodeRef.current && html5QrcodeRef.current.isScanning) {
         html5QrcodeRef.current.stop().catch(console.error);
       }
@@ -160,16 +170,20 @@ export function WarehouseOutgoingPageClient({
 
     html5QrcodeRef.current = html5Qrcode;
 
-    // Menyalakan stream kamera tanpa callback auto-decode
     html5Qrcode
       .start(
         { facingMode: "environment" },
         {
-          fps: 10,
+          fps: 15,
           qrbox: { width: 260, height: 130 },
         },
-        () => {
-          // Kosongkan callback agar tidak otomatis menumpuk scan
+        (decodedText) => {
+          // Hanya proses dekode jika pelatuk ditekan (canScanRef === true)
+          if (canScanRef.current) {
+            canScanRef.current = false; // Kunci kembali pelatuk
+            setIsReadyToScan(false);
+            handleBarcodeScanned(decodedText.trim());
+          }
         },
         () => {},
       )
@@ -178,8 +192,14 @@ export function WarehouseOutgoingPageClient({
         html5Qrcode
           .start(
             { facingMode: "user" },
-            { fps: 10, qrbox: { width: 260, height: 130 } },
-            () => {},
+            { fps: 15, qrbox: { width: 260, height: 130 } },
+            (decodedText) => {
+              if (canScanRef.current) {
+                canScanRef.current = false;
+                setIsReadyToScan(false);
+                handleBarcodeScanned(decodedText.trim());
+              }
+            },
             () => {},
           )
           .catch(() => {
@@ -191,66 +211,28 @@ export function WarehouseOutgoingPageClient({
       });
 
     return () => {
+      canScanRef.current = false;
       if (html5Qrcode.isScanning) {
         html5Qrcode.stop().catch(console.error);
       }
     };
   }, [isScannerOpen]);
 
-  // Tombol Manual Trigger Scan Frame
-  const handleTriggerManualScan = async () => {
-    if (!html5QrcodeRef.current || isCapturing) return;
-
-    setIsCapturing(true);
-    try {
-      const decodedText = await html5QrcodeRef.current.scanFileV2(
-        // Ekstrak frame gambar saat tombol ditekan
-        await captureCurrentWebcamFrame(),
-        false,
-      );
-      if (decodedText) {
-        handleBarcodeScanned(decodedText.trim());
-      }
-    } catch (err) {
-      toast.error("Barcode tidak terdeteksi di frame ini. Coba lagi.");
-    } finally {
-      setIsCapturing(false);
-    }
-  };
-
-  // Utility mengambil snapshot dari element video
-  const captureCurrentWebcamFrame = (): Promise<File> => {
-    return new Promise((resolve, reject) => {
-      const container = document.getElementById(SCANNER_ELEMENT_ID);
-      const videoEl = container?.querySelector("video") as HTMLVideoElement;
-
-      if (!videoEl) {
-        reject(new Error("Video element tidak ditemukan."));
-        return;
-      }
-
-      const canvas = document.createElement("canvas");
-      canvas.width = videoEl.videoWidth || 640;
-      canvas.height = videoEl.videoHeight || 480;
-
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        reject(new Error("Gagal mengambil context canvas."));
-        return;
-      }
-
-      ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-      canvas.toBlob((blob) => {
-        if (blob) {
-          const file = new File([blob], "webcam-frame.png", {
-            type: "image/png",
-          });
-          resolve(file);
-        } else {
-          reject(new Error("Gagal membuat blob frame."));
-        }
-      }, "image/png");
+  // Handler Pelatuk Tombol Scan
+  const handleTriggerManualScan = () => {
+    canScanRef.current = true;
+    setIsReadyToScan(true);
+    toast.info("Pemindai Aktif! Arahkan kamera ke barcode...", {
+      duration: 1200,
     });
+
+    // Otomatis reset pelatuk jika tidak ada barcode yang terdeteksi dalam 2.5 detik
+    setTimeout(() => {
+      if (canScanRef.current) {
+        canScanRef.current = false;
+        setIsReadyToScan(false);
+      }
+    }, 2500);
   };
 
   // Filter Varian Berdasarkan Live Search Query
@@ -353,7 +335,7 @@ export function WarehouseOutgoingPageClient({
 
   return (
     <div className="space-y-4 text-xs font-sans max-w-md mx-auto">
-      {/* Top Action Bar: Kembali ke Menu Utama & Reset Draf */}
+      {/* Top Action Bar */}
       <div className="flex items-center justify-between font-mono">
         <Link
           href="/supervisor/warehouse/dashboard"
@@ -437,7 +419,7 @@ export function WarehouseOutgoingPageClient({
         </button>
       </div>
 
-      {/* DIRECT ON-PAGE WEBCAM STREAM CONTAINER (NON-MODAL) */}
+      {/* DIRECT ON-PAGE WEBCAM STREAM CONTAINER */}
       {isScannerOpen && (
         <div className="relative bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden p-2 space-y-2">
           <div
@@ -448,19 +430,22 @@ export function WarehouseOutgoingPageClient({
           {/* Tombol Pelatuk Scan Manual */}
           <button
             onClick={handleTriggerManualScan}
-            disabled={isCapturing}
-            className="w-full py-3 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-neutral-950 font-mono font-bold rounded-lg flex items-center justify-center gap-2 uppercase text-xs shadow-lg transition-colors"
+            className={`w-full py-3 font-mono font-bold rounded-lg flex items-center justify-center gap-2 uppercase text-xs shadow-lg transition-all ${
+              isReadyToScan
+                ? "bg-emerald-500 text-neutral-950 animate-pulse"
+                : "bg-amber-500 hover:bg-amber-400 text-neutral-950"
+            }`}
           >
-            {isCapturing ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <ScanLine className="w-4 h-4" />
-            )}
-            <span>AMBIL FRAME / SCAN BARCODE</span>
+            <ScanLine className="w-4 h-4" />
+            <span>
+              {isReadyToScan
+                ? "MENIMBANG BARCODE..."
+                : "TEKAN UNTUK SCAN BARCODE"}
+            </span>
           </button>
 
           <p className="text-[9.5px] font-mono text-neutral-400 text-center">
-            Posisikan Barcode di kotak, lalu tekan tombol kuning di atas.
+            Pas-kan garis hijau ke barcode, lalu tekan tombol di atas.
           </p>
         </div>
       )}
@@ -530,7 +515,7 @@ export function WarehouseOutgoingPageClient({
         )}
       </div>
 
-      {/* DAFTAR ITEM KELUAR (INCREMENT/DECREMENT & IMPACT STOK) */}
+      {/* DAFTAR ITEM KELUAR */}
       <div className="space-y-2">
         <p className="text-[10px] font-mono text-neutral-500 uppercase px-1">
           DAFTAR BARANG KELUAR ({scannedListUI.length} ITEM):
@@ -565,7 +550,7 @@ export function WarehouseOutgoingPageClient({
                 </button>
               </div>
 
-              {/* IMPACT STOK: STOK AWAL -> QTY KELUAR -> STOK SETELAH */}
+              {/* IMPACT STOK */}
               <div className="grid grid-cols-3 gap-1 bg-neutral-950 p-2 rounded border border-neutral-800/80 text-[10px] text-center">
                 <div>
                   <span className="text-[8.5px] text-neutral-500 block">
