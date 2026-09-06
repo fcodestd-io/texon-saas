@@ -2,10 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import {
-  submitWarehouseReturnAction,
-  getWarehouseReturnHistoryAction,
-} from "./action";
+import { getWarehouseReturnHistoryAction } from "./action";
 import { toast } from "sonner";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import {
@@ -33,6 +30,14 @@ import {
 const LOCAL_STORAGE_KEY = "SPV_WAREHOUSE_RETURN_DRAFT_V1";
 const SCANNER_ELEMENT_ID = "html5qrcode-return-stream";
 
+type ReturnItem = {
+  productVariantId: string;
+  returnType: "RESTOCK" | "DEFECTIVE";
+  quantity: number;
+  reason: string;
+};
+type ReturnItemsMap = Record<string, ReturnItem>;
+
 export function WarehouseReturnPageClient({
   initialMarketplaces = [],
   initialVariants = [],
@@ -49,17 +54,7 @@ export function WarehouseReturnPageClient({
   // Form State
   const [selectedMarketplaceId, setSelectedMarketplaceId] = useState("");
   const [notes, setNotes] = useState("");
-  const [returnItemsMap, setReturnItemsMap] = useState<
-    Record<
-      string,
-      {
-        productVariantId: string;
-        returnType: "RESTOCK" | "DEFECTIVE";
-        quantity: number;
-        reason: string;
-      }
-    >
-  >({});
+  const [returnItemsMap, setReturnItemsMap] = useState<ReturnItemsMap>({});
 
   const [isLoaded, setIsLoaded] = useState(false);
 
@@ -69,6 +64,7 @@ export function WarehouseReturnPageClient({
 
   // Scanner State
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isClosingScanner, setIsClosingScanner] = useState(false);
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
 
   // Ref Flag untuk Mengontrol Pelatuk Tombol Scan
@@ -142,6 +138,7 @@ export function WarehouseReturnPageClient({
 
       toast.success(
         `Ditambahkan: ${matched.productName} (${matched.color} - ${matched.size})`,
+        { id: "scan-result" },
       );
       setReturnItemsMap((prev) => {
         const current = prev[matched.id];
@@ -158,7 +155,27 @@ export function WarehouseReturnPageClient({
       setSearchQuery("");
       setIsSearchOpen(false);
     } else {
-      toast.error(`SKU / Barcode "${scannedCode}" tidak ditemukan!`);
+      toast.error(`SKU / Barcode "${scannedCode}" tidak ditemukan!`, {
+        id: "scan-result",
+      });
+    }
+  };
+
+  // Helper: tutup scanner dengan aman — stop() kamera dulu sampai selesai,
+  // baru unmount elemen scanner-nya. Ini yang memperbaiki race condition
+  // penyebab "this page couldn't load".
+  const closeScannerSafely = async () => {
+    if (!isScannerOpen) return;
+    setIsClosingScanner(true);
+    try {
+      if (html5QrcodeRef.current?.isScanning) {
+        await html5QrcodeRef.current.stop();
+      }
+    } catch (err) {
+      console.error("Gagal menghentikan kamera:", err);
+    } finally {
+      setIsScannerOpen(false);
+      setIsClosingScanner(false);
     }
   };
 
@@ -167,7 +184,7 @@ export function WarehouseReturnPageClient({
     if (!isScannerOpen) {
       canScanRef.current = false;
       setIsReadyToScan(false);
-      if (html5QrcodeRef.current && html5QrcodeRef.current.isScanning) {
+      if (html5QrcodeRef.current?.isScanning) {
         html5QrcodeRef.current.stop().catch(console.error);
       }
       return;
@@ -230,9 +247,12 @@ export function WarehouseReturnPageClient({
 
   // Handler Pelatuk Tombol Scan
   const handleTriggerManualScan = () => {
+    if (canScanRef.current) return; // cegah tap ganda saat scanner masih aktif
+
     canScanRef.current = true;
     setIsReadyToScan(true);
     toast.info("Pemindai Aktif! Arahkan kamera ke barcode...", {
+      id: "scan-trigger",
       duration: 1200,
     });
 
@@ -324,16 +344,20 @@ export function WarehouseReturnPageClient({
 
     setIsSubmitting(true);
     try {
-      const res = await submitWarehouseReturnAction({
-        marketplaceId: selectedMarketplaceId || null,
-        notes,
-        items: validItems,
-      });
+      const res = await fetch("/api/warehouse/return", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          marketplaceId: selectedMarketplaceId || null,
+          notes,
+          items: validItems,
+        }),
+      }).then((r) => r.json());
 
       if (res && res.success) {
         toast.success(res.message || "Pengembalian barang berhasil disimpan!");
         handleResetDraft(false);
-        setIsScannerOpen(false);
+        await closeScannerSafely(); // stop kamera dulu sebelum unmount elemen
 
         try {
           const updatedHistory = await getWarehouseReturnHistoryAction();
@@ -441,14 +465,25 @@ export function WarehouseReturnPageClient({
 
         {/* Toggle Webcam Scanner */}
         <button
-          onClick={() => setIsScannerOpen(!isScannerOpen)}
-          className={`w-full py-2.5 rounded-lg flex items-center justify-center gap-2 uppercase font-mono font-bold transition-colors ${
+          onClick={() => {
+            if (isScannerOpen) {
+              closeScannerSafely();
+            } else {
+              setIsScannerOpen(true);
+            }
+          }}
+          disabled={isClosingScanner}
+          className={`w-full py-2.5 rounded-lg flex items-center justify-center gap-2 uppercase font-mono font-bold transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
             isScannerOpen
               ? "bg-red-500 hover:bg-red-400 text-neutral-950"
               : "bg-amber-500 hover:bg-amber-400 text-neutral-950"
           }`}
         >
-          {isScannerOpen ? (
+          {isClosingScanner ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" /> MENUTUP KAMERA...
+            </>
+          ) : isScannerOpen ? (
             <>
               <CameraOff className="w-4 h-4" /> TUTUP WEBCAM SCANNER
             </>
@@ -471,7 +506,8 @@ export function WarehouseReturnPageClient({
           {/* Tombol Pelatuk Scan Manual */}
           <button
             onClick={handleTriggerManualScan}
-            className={`w-full py-3 font-mono font-bold rounded-lg flex items-center justify-center gap-2 uppercase text-xs shadow-lg transition-all ${
+            disabled={isReadyToScan}
+            className={`w-full py-3 font-mono font-bold rounded-lg flex items-center justify-center gap-2 uppercase text-xs shadow-lg transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
               isReadyToScan
                 ? "bg-emerald-500 text-neutral-950 animate-pulse"
                 : "bg-amber-500 hover:bg-amber-400 text-neutral-950"
