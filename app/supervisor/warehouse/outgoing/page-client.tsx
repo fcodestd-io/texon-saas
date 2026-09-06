@@ -288,12 +288,10 @@ export function WarehouseOutgoingPageClient({
     });
   };
 
-  // Submit & Finalisasi Transaksi Aman
   const handleSubmit = async () => {
     const validItems = Object.values(scannedItemsMap).filter(
       (i) => i.quantity > 0,
     );
-
     if (validItems.length === 0) {
       toast.warning("Tambahkan minimal 1 barang keluar.");
       return;
@@ -307,31 +305,27 @@ export function WarehouseOutgoingPageClient({
         items: validItems,
       });
 
-      if (res && res.success) {
-        toast.success(res.message || "Pengeluaran barang berhasil disimpan!");
-        handleResetDraft(false);
+      if (res?.success) {
+        toast.success(res.message);
+        handleResetDraft(false); // Reset draft tanpa toast ganda
         setIsScannerOpen(false);
 
-        // Ambil riwayat baru secara terpisah agar halaman tidak crash
-        try {
-          const updatedHistory = await getWarehouseOutgoingHistoryAction();
-          if (Array.isArray(updatedHistory)) {
-            setHistoryList(updatedHistory);
-          }
-        } catch (fetchErr) {
-          console.error("Gagal mengambil riwayat terbaru:", fetchErr);
+        // Ambil histori secara terpisah & aman
+        const updatedHistory = await getWarehouseOutgoingHistoryAction();
+        if (Array.isArray(updatedHistory)) {
+          setHistoryList(updatedHistory);
         }
       } else {
         toast.error(res?.message || "Gagal menyimpan transaksi.");
       }
     } catch (err: any) {
-      console.error("Submit error caught:", err);
-      toast.error(err?.message || "Terjadi masalah server. Silakan coba lagi.");
+      console.error("Client Submit Error:", err);
+      toast.error("Gagal terhubung ke server. Silakan coba lagi.");
     } finally {
       setIsSubmitting(false);
     }
   };
-
+  
   // Array Scanned List untuk UI Mapping
   const scannedListUI = Object.values(scannedItemsMap)
     .map((item) => {
