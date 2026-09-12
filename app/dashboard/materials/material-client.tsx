@@ -19,7 +19,6 @@ import {
   X,
   Palette,
   Calculator,
-  CheckSquare,
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
@@ -188,8 +187,8 @@ export function MaterialClient({
     }
   };
 
-  const calculatedBaseUnitPrice =
-    convValue > 0 ? (purchasePrice / convValue).toFixed(2) : "0.00";
+  const numericConv = convValue > 0 ? convValue : 1;
+  const calculatedBaseUnitPrice = purchasePrice / numericConv;
 
   return (
     <div className="space-y-6">
@@ -228,13 +227,22 @@ export function MaterialClient({
             const isOpen = Boolean(openAccordions[m.id]);
             const isGroupable = m.category !== "accessory";
 
-            // Stok fisik selalu dihitung dan ditampilkan dalam Satuan Beli (purchaseUnitId)
-            const totalStock = isGroupable
+            // Kolom stock di database mewakili Satuan Pakai
+            const totalStockBase = isGroupable
               ? m.variants.reduce(
                   (acc, curr) => acc + parseFloat(curr.stock || "0"),
                   0,
                 )
               : parseFloat(m.stock || "0");
+
+            const simpanUnitName = getUnitName(m.purchaseUnitId);
+            const pakaiUnitName = getUnitName(m.baseUnitId);
+            const pPrice = parseFloat(m.purchasePrice || "0");
+            const cVal = parseFloat(m.conversionValue || "1");
+            const bPrice = cVal > 0 ? pPrice / cVal : 0;
+
+            // Perhitungan nominal stok dalam Satuan Simpan
+            const totalStockPurchase = cVal > 0 ? totalStockBase / cVal : 0;
 
             return (
               <div key={m.id} className="transition-colors">
@@ -253,52 +261,33 @@ export function MaterialClient({
                       </button>
                     )}
 
-                    <div className="space-y-1">
+                    <div className="space-y-0.5">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-normal text-neutral-900 dark:text-neutral-100">
                           {m.name}
                         </span>
-                        <span className="text-[9px] font-extralight uppercase px-2 py-0.5 border border-neutral-200 dark:border-neutral-800 text-neutral-500">
-                          {m.category}
-                        </span>
                         {isGroupable && (
-                          <span className="text-[10px] font-extralight bg-neutral-200 dark:bg-neutral-800 px-2 py-0.5 text-neutral-600 dark:text-neutral-300">
-                            {m.variants.length} WARNA DITERAPKAN
+                          <span className="text-[10px] bg-neutral-200 dark:bg-neutral-800 px-2 py-0.5 text-neutral-600 dark:text-neutral-300">
+                            {m.variants.length} Warna
                           </span>
                         )}
                       </div>
-                      <div className="flex flex-wrap items-center gap-3 text-xs font-extralight text-neutral-500">
-                        <span>
-                          Satuan Beli / Simpan:{" "}
-                          <strong>{getUnitName(m.purchaseUnitId)}</strong> (Rp{" "}
-                          {formatNumber(m.purchasePrice)})
-                        </span>
-                        <span>•</span>
-                        <span>
-                          Satuan Pakai (HPP):{" "}
-                          <strong>{getUnitName(m.baseUnitId)}</strong>
-                        </span>
-                        <span>•</span>
-                        <span>
-                          Konversi: 1 {getUnitName(m.purchaseUnitId)} ={" "}
-                          {formatNumber(m.conversionValue)}{" "}
-                          {getUnitName(m.baseUnitId)}
-                        </span>
-                      </div>
+                      <p className="text-xs text-neutral-500">
+                        Rp {formatNumber(pPrice, 0)} per {simpanUnitName} (Rp{" "}
+                        {formatNumber(bPrice, 1)} per {pakaiUnitName}) • 1{" "}
+                        {simpanUnitName} = {formatNumber(cVal)} {pakaiUnitName}
+                      </p>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-4 self-end md:self-center">
+                    {/* TAMPILAN NOMINAL STOK DUA SATUAN (SIMPAN & PAKAI) */}
                     <div className="text-right">
-                      <span className="text-[10px] font-extralight uppercase text-neutral-400 block">
-                        {isGroupable
-                          ? "TOTAL STOK GABUNGAN"
-                          : "STOK SIMPAN AKTIF"}
+                      <span className="text-xs font-medium text-neutral-900 dark:text-neutral-100 block">
+                        {formatNumber(totalStockPurchase)} {simpanUnitName}
                       </span>
-                      {/* Tampilan Stok Utama dalam Satuan Beli (misal: Roll / Cone / Box) */}
-                      <span className="text-xs font-medium text-neutral-900 dark:text-neutral-100">
-                        {formatNumber(totalStock)}{" "}
-                        {getUnitName(m.purchaseUnitId)}
+                      <span className="text-[11px] text-neutral-500 block">
+                        ({formatNumber(totalStockBase)} {pakaiUnitName})
                       </span>
                     </div>
 
@@ -306,11 +295,7 @@ export function MaterialClient({
                       <button
                         onClick={() => handleOpenEdit(m)}
                         className="p-2 text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 border border-neutral-200 dark:border-neutral-800 transition-colors"
-                        title={
-                          isGroupable
-                            ? "Edit Bahan & Sinkronkan Warna"
-                            : "Edit Bahan"
-                        }
+                        title="Edit Bahan"
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
@@ -323,11 +308,7 @@ export function MaterialClient({
                           })
                         }
                         className="p-2 text-neutral-500 hover:text-red-400 border border-neutral-200 dark:border-neutral-800 transition-colors"
-                        title={
-                          isGroupable
-                            ? "Hapus Bahan Beserta Semua Warnanya"
-                            : "Hapus Bahan"
-                        }
+                        title="Hapus Bahan"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -340,44 +321,56 @@ export function MaterialClient({
                   <div className="bg-neutral-100/30 dark:bg-neutral-950/60 pl-8 pr-4 py-2 divide-y divide-neutral-200/50 dark:divide-neutral-800/40">
                     {m.variants.length === 0 ? (
                       <div className="py-3 text-[10px] text-neutral-500 italic">
-                        Belum ada asosiasi warna. Klik Edit untuk menambahkan.
+                        Belum ada warna. Klik Edit untuk menambahkan.
                       </div>
                     ) : (
-                      m.variants.map((v) => (
-                        <div
-                          key={v.id}
-                          className="py-2.5 flex justify-between items-center text-xs font-light"
-                        >
-                          <div className="flex items-center gap-2">
-                            <Palette className="w-3.5 h-3.5 text-neutral-400" />
-                            <span className="text-neutral-900 dark:text-neutral-200 font-normal">
-                              {v.colorName || "Netral"}
-                            </span>
-                          </div>
+                      m.variants.map((v) => {
+                        const variantStockBase = parseFloat(v.stock || "0");
+                        const variantStockPurchase =
+                          cVal > 0 ? variantStockBase / cVal : 0;
 
-                          <div className="flex items-center gap-6">
-                            {/* Stok per warna ditampilkan dalam Satuan Beli (purchaseUnitId) */}
-                            <span className="text-neutral-500 text-[11px] block">
-                              Stok Warna:{" "}
-                              <strong>{formatNumber(v.stock)}</strong>{" "}
-                              {getUnitName(m.purchaseUnitId)}
-                            </span>
-                            <button
-                              onClick={() =>
-                                setDeletingParams({
-                                  id: v.id,
-                                  name: `${m.name} (${v.colorName})`,
-                                  isVariant: true,
-                                })
-                              }
-                              className="p-1.5 text-neutral-400 hover:text-red-400 border border-neutral-300 dark:border-neutral-800"
-                              title="Hapus Varian Warna Ini Saja"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
+                        return (
+                          <div
+                            key={v.id}
+                            className="py-2.5 flex justify-between items-center text-xs font-light"
+                          >
+                            <div className="flex items-center gap-2">
+                              <Palette className="w-3.5 h-3.5 text-neutral-400" />
+                              <span className="text-neutral-900 dark:text-neutral-200 font-normal">
+                                {v.colorName || "Netral"}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-6">
+                              {/* STOK PER WARNA DALAM SATUAN SIMPAN & PAKAI */}
+                              <div className="text-right">
+                                <span className="text-neutral-200 text-xs font-medium block">
+                                  {formatNumber(variantStockPurchase)}{" "}
+                                  {simpanUnitName}
+                                </span>
+                                <span className="text-neutral-500 text-[10px] block">
+                                  ({formatNumber(variantStockBase)}{" "}
+                                  {pakaiUnitName})
+                                </span>
+                              </div>
+
+                              <button
+                                onClick={() =>
+                                  setDeletingParams({
+                                    id: v.id,
+                                    name: `${m.name} (${v.colorName})`,
+                                    isVariant: true,
+                                  })
+                                }
+                                className="p-1.5 text-neutral-400 hover:text-red-400 border border-neutral-300 dark:border-neutral-800"
+                                title="Hapus Warna Ini"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 )}
@@ -460,7 +453,7 @@ export function MaterialClient({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="block text-[11px] font-light text-neutral-400 uppercase tracking-wider">
-                    SATUAN BELI / SIMPAN (PURCHASE UNIT) *
+                    SATUAN SIMPAN (BELI) *
                   </label>
                   <select
                     name="purchaseUnitId"
@@ -473,7 +466,7 @@ export function MaterialClient({
                       value=""
                       className="bg-neutral-900 text-neutral-100"
                     >
-                      -- Pilih Satuan Beli --
+                      -- Pilih Satuan Simpan --
                     </option>
                     {unitOptions.map((u) => (
                       <option
@@ -489,7 +482,7 @@ export function MaterialClient({
 
                 <div className="space-y-1">
                   <label className="block text-[11px] font-light text-neutral-400 uppercase tracking-wider">
-                    SATUAN PAKAI / HPP (CONSUMPTION) *
+                    SATUAN PAKAI (HPP) *
                   </label>
                   <select
                     name="baseUnitId"
@@ -537,7 +530,7 @@ export function MaterialClient({
                 <div className="space-y-1">
                   <label className="block text-[11px] font-light text-neutral-400 uppercase tracking-wider leading-tight">
                     NILAI KONVERSI (1{" "}
-                    {getUnitName(purchaseUnitId).toUpperCase() || "BELI"} = X{" "}
+                    {getUnitName(purchaseUnitId).toUpperCase() || "SIMPAN"} = X{" "}
                     {getUnitName(baseUnitId).toUpperCase() || "PAKAI"}) *
                   </label>
                   <input
@@ -566,12 +559,12 @@ export function MaterialClient({
 
               <div className="space-y-1">
                 <label className="block text-[11px] font-light text-neutral-400 uppercase tracking-wider">
-                  STOK AWAL SIMPAN (
-                  {getUnitName(purchaseUnitId).toUpperCase() || "SATUAN BELI"})
+                  STOK AWAL (
+                  {getUnitName(baseUnitId).toUpperCase() || "SATUAN PAKAI"})
                 </label>
                 <input
                   type="text"
-                  value={`0 ${getUnitName(purchaseUnitId)} (Otomatis dari Sistem)`}
+                  value={`0 ${getUnitName(baseUnitId)} (Otomatis dari Sistem)`}
                   disabled
                   className="w-full px-3 py-2 bg-neutral-200 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-800 text-xs font-light text-neutral-500 cursor-not-allowed"
                 />

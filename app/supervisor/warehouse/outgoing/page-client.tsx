@@ -415,7 +415,7 @@ export function WarehouseOutgoingPageClient({
               onChange={(e) => setSelectedMarketplaceId(e.target.value)}
               className="w-full p-2 bg-neutral-900 border border-neutral-800 text-neutral-100 rounded focus:outline-none"
             >
-              <option value="">-- TANPA MARKETPLACE (OFFLINE/GROSIR) --</option>
+              <option value="">-- PILIH MARKETPLACE --</option>
               {marketplaces.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
@@ -426,13 +426,13 @@ export function WarehouseOutgoingPageClient({
 
           <div>
             <label className="text-[10px] text-neutral-400 block mb-1">
-              CATATAN / NOMOR RESI (OPSIONAL):
+              CATATAN (OPSIONAL):
             </label>
             <input
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Nomor Resi / Keterangan..."
+              placeholder="Keterangan..."
               className="w-full p-2 bg-neutral-900 border border-neutral-800 text-neutral-100 rounded focus:outline-none"
             />
           </div>

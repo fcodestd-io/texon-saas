@@ -1,7 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, Suspense } from "react";
 import CountUp from "react-countup";
+import {
+  getDashboardMetricsAction,
+  getTopProductsPaginatedAction,
+} from "./action";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -17,9 +21,11 @@ import {
   DollarSign,
   Shirt,
   PackageCheck,
-  EyeOff,
   Filter,
-  ArrowUpRight,
+  Loader2,
+  RotateCcw,
+  Coins,
+  ChevronDown,
 } from "lucide-react";
 
 ChartJS.register(
@@ -31,51 +37,174 @@ ChartJS.register(
   Legend,
 );
 
-interface DashboardOverviewProps {
-  isOwner: boolean;
+// Fallback Skeleton Component (Cards, Chart, dan Table Loader)
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6 animate-pulse font-mono">
+      {/* 1. Cards Skeleton */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {[1, 2, 3, 4].map((i) => (
+          <div
+            key={i}
+            className="border border-neutral-800 p-5 space-y-3 bg-neutral-900/60 rounded-xl"
+          >
+            <div className="flex justify-between items-center">
+              <div className="h-3 w-28 bg-neutral-800 rounded"></div>
+              <div className="h-4 w-4 bg-neutral-800 rounded-full"></div>
+            </div>
+            <div className="h-8 w-40 bg-neutral-800 rounded"></div>
+            <div className="h-3 w-32 bg-neutral-800 rounded"></div>
+          </div>
+        ))}
+      </div>
+
+      {/* 2. Chart Skeleton */}
+      <div className="border border-neutral-800 p-5 bg-neutral-900/60 rounded-xl space-y-4">
+        <div className="flex justify-between items-center pb-2 border-b border-neutral-800">
+          <div className="h-4 w-64 bg-neutral-800 rounded"></div>
+          <div className="h-3 w-24 bg-neutral-800 rounded"></div>
+        </div>
+        <div className="h-72 w-full bg-neutral-950/60 rounded flex flex-col items-center justify-center gap-2 border border-neutral-800/50">
+          <Loader2 className="w-6 h-6 animate-spin text-amber-500" />
+          <span className="text-xs text-neutral-500">
+            Kalkulasi Data & Agregasi Grafik...
+          </span>
+        </div>
+      </div>
+
+      {/* 3. Table Skeleton */}
+      <div className="border border-neutral-800 bg-neutral-900/60 rounded-xl p-4 space-y-3">
+        <div className="flex justify-between items-center pb-3 border-b border-neutral-800">
+          <div className="h-4 w-48 bg-neutral-800 rounded"></div>
+          <div className="h-3 w-20 bg-neutral-800 rounded"></div>
+        </div>
+        <div className="space-y-2">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div
+              key={i}
+              className="h-12 w-full bg-neutral-950/60 rounded border border-neutral-800/40 flex justify-between items-center px-4"
+            >
+              <div className="space-y-1">
+                <div className="h-3 w-36 bg-neutral-800 rounded"></div>
+                <div className="h-2 w-20 bg-neutral-800 rounded"></div>
+              </div>
+              <div className="h-6 w-24 bg-neutral-800 rounded"></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
-export function DashboardOverview({ isOwner }: DashboardOverviewProps) {
+function DashboardContent() {
   const [selectedMonth, setSelectedMonth] = useState("09");
   const [selectedYear, setSelectedYear] = useState("2026");
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Helper untuk mendapatkan jumlah hari dalam bulan yang dipilih
-  const getDaysInMonth = (monthStr: string, yearStr: string) => {
-    const month = parseInt(monthStr, 10);
-    const year = parseInt(yearStr, 10);
-    return new Date(year, month, 0).getDate();
+  const [metrics, setMetrics] = useState<{
+    grossOmset: number;
+    returnOmset: number;
+    netOmset: number;
+    totalHpp: number;
+    netProfit: number;
+    totalQtySold: number;
+    totalQtyReturned: number;
+    totalDaysInMonth: number;
+    chartDailyOmset: number[];
+  } | null>(null);
+
+  const [productsList, setProductsList] = useState<
+    Array<{ productName: string; sku: string; totalQty: number }>
+  >([]);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
+    setMetrics(null); // Reset ke null agar memicu Suspense/Skeleton saat berpindah bulan
+
+    Promise.all([
+      getDashboardMetricsAction(selectedMonth, selectedYear),
+      getTopProductsPaginatedAction(selectedMonth, selectedYear, 1, 5),
+    ]).then(([metricsData, productsRes]) => {
+      if (!isMounted) return;
+
+      if (metricsData) {
+        setMetrics(metricsData);
+      }
+      if (productsRes) {
+        setProductsList(productsRes.items);
+        setHasMore(productsRes.hasMore);
+        setPage(1);
+      }
+
+      setIsLoading(false);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedMonth, selectedYear]);
+
+  const fetchProducts = async (pageNum: number) => {
+    setIsLoadingProducts(true);
+    const res = await getTopProductsPaginatedAction(
+      selectedMonth,
+      selectedYear,
+      pageNum,
+      5,
+    );
+
+    setProductsList((prev) => [...prev, ...res.items]);
+    setHasMore(res.hasMore);
+    setIsLoadingProducts(false);
   };
 
-  const totalDays = getDaysInMonth(selectedMonth, selectedYear);
+  const handleLoadMore = () => {
+    if (!hasMore || isLoadingProducts) return;
+    const nextPage = page + 1;
+    setPage(nextPage);
+    fetchProducts(nextPage);
+  };
 
-  // Generate label tanggal harian (Tgl 1 - Tgl Akhir Bulan)
+  // Pengecekan kondisi data belum termuat / metrics masih null
+  const isDataNotFullyLoaded = isLoading || metrics === null;
+
   const dailyLabels = Array.from(
-    { length: totalDays },
+    { length: metrics?.totalDaysInMonth || 30 },
     (_, i) => `Tgl ${i + 1}`,
   );
 
-  // Mock data omset & laba harian untuk visualisasi grafik
-  const mockDailyOmset = Array.from({ length: totalDays }, (_, i) =>
-    Math.floor(3000000 + Math.sin(i) * 1500000 + (i % 5) * 800000),
-  );
+  const profitRatio =
+    (metrics?.netOmset || 0) > 0
+      ? (metrics?.netProfit || 0) / (metrics?.netOmset || 1)
+      : 0;
 
-  const mockDailyLaba = mockDailyOmset.map((val) => Math.floor(val * 0.28));
+  const chartDailyProfit = (metrics?.chartDailyOmset || []).map((val) =>
+    Math.round(val * profitRatio),
+  );
 
   const chartData = {
     labels: dailyLabels,
     datasets: [
       {
-        label: "Omset Harian (Rp)",
-        data: mockDailyOmset,
-        backgroundColor: "rgba(23, 23, 23, 0.9)",
-        borderColor: "#171717",
+        label: "Omset Bersih Harian (Rp)",
+        data: metrics?.chartDailyOmset || [],
+        backgroundColor: "rgba(16, 185, 129, 0.8)",
+        borderColor: "#10b981",
         borderWidth: 1,
       },
       {
-        label: "Laba Bersih Harian (Rp)",
-        data: mockDailyLaba,
-        backgroundColor: "rgba(163, 163, 163, 0.5)",
-        borderColor: "#737373",
+        label: "Keuntungan Harian (Rp)",
+        data: chartDailyProfit,
+        backgroundColor:
+          profitRatio < 0.1
+            ? "rgba(239, 68, 68, 0.8)"
+            : "rgba(245, 158, 11, 0.8)",
+        borderColor: profitRatio < 0.1 ? "#ef4444" : "#f59e0b",
         borderWidth: 1,
       },
     ],
@@ -88,7 +217,8 @@ export function DashboardOverview({ isOwner }: DashboardOverviewProps) {
       legend: {
         position: "top" as const,
         labels: {
-          font: { family: "var(--font-jakarta), sans-serif", size: 11 },
+          font: { family: "monospace", size: 11 },
+          color: "#a3a3a3",
           boxWidth: 12,
         },
       },
@@ -104,11 +234,12 @@ export function DashboardOverview({ isOwner }: DashboardOverviewProps) {
     scales: {
       x: {
         grid: { display: false },
-        ticks: { font: { size: 9 }, maxRotation: 45, minRotation: 0 },
+        ticks: { color: "#737373", font: { size: 9 } },
       },
       y: {
-        grid: { color: "rgba(212, 212, 212, 0.2)" },
+        grid: { color: "rgba(38, 38, 38, 0.6)" },
         ticks: {
+          color: "#737373",
           font: { size: 10 },
           callback: (value: any) => `Rp ${(value / 1000000).toFixed(1)}Jt`,
         },
@@ -117,26 +248,29 @@ export function DashboardOverview({ isOwner }: DashboardOverviewProps) {
   };
 
   return (
-    <div className="space-y-10">
-      {/* Control Bar: Filter Bulan & Tahun */}
-      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 pb-4 border-b border-neutral-200 dark:border-neutral-800/80">
+    <div className="space-y-6">
+      {/* Control Bar Filter Periode */}
+      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 pb-4 border-b border-neutral-800">
         <div>
-          <h2 className="text-sm font-light uppercase tracking-wider text-neutral-900 dark:text-neutral-100">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-neutral-100 font-mono">
             METRIKS & ANALISIS OPERASIONAL
           </h2>
-          <p className="text-xs font-extralight text-neutral-500">
-            Periode Tampilan: Bulan {selectedMonth} / {selectedYear} (
-            {totalDays} Hari)
+          <p className="text-xs font-light text-neutral-400 font-mono">
+            Periode Tampilan: Bulan {selectedMonth} / {selectedYear}
           </p>
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-3 py-1.5">
+          {isLoading && (
+            <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+          )}
+
+          <div className="flex items-center gap-2 border border-neutral-800 bg-neutral-900 px-3 py-1.5 rounded focus-within:border-amber-500">
             <Filter className="w-3.5 h-3.5 text-neutral-400" />
             <select
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
-              className="bg-transparent text-xs font-light focus:outline-none text-neutral-900 dark:text-neutral-100 cursor-pointer"
+              className="bg-neutral-900 text-xs font-mono focus:outline-none text-neutral-100 cursor-pointer"
             >
               <option value="01">Januari</option>
               <option value="02">Februari</option>
@@ -153,11 +287,11 @@ export function DashboardOverview({ isOwner }: DashboardOverviewProps) {
             </select>
           </div>
 
-          <div className="border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 px-3 py-1.5">
+          <div className="border border-neutral-800 bg-neutral-900 px-3 py-1.5 rounded focus-within:border-amber-500">
             <select
               value={selectedYear}
               onChange={(e) => setSelectedYear(e.target.value)}
-              className="bg-transparent text-xs font-light focus:outline-none text-neutral-900 dark:text-neutral-100 cursor-pointer"
+              className="bg-neutral-900 text-xs font-mono focus:outline-none text-neutral-100 cursor-pointer"
             >
               <option value="2024">2024</option>
               <option value="2025">2025</option>
@@ -167,255 +301,199 @@ export function DashboardOverview({ isOwner }: DashboardOverviewProps) {
         </div>
       </div>
 
-      {/* Grid 4 Metric Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {/* Card 1: Omset Penjualan */}
-        {isOwner ? (
-          <div className="border border-neutral-200 dark:border-neutral-800/80 p-6 space-y-3 bg-white dark:bg-neutral-900/40">
-            <div className="flex items-center justify-between text-neutral-500">
-              <span className="text-[10px] font-extralight tracking-widest uppercase">
-                OMSET PENJUALAN
-              </span>
-              <DollarSign className="w-4 h-4 text-emerald-500" />
+      {/* JIKA DATA BELUM TERMUAT SEPENUHNYA, TAMPILKAN SKELETON */}
+      {isDataNotFullyLoaded ? (
+        <DashboardSkeleton />
+      ) : (
+        <>
+          {/* Grid 4 Cards Utama */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* CARD 1: OMSET PENJUALAN */}
+            <div className="border border-neutral-800/90 p-5 space-y-2 bg-neutral-900/60 rounded-xl shadow-sm">
+              <div className="flex items-center justify-between text-neutral-500">
+                <span className="text-[10px] font-mono font-bold tracking-wider uppercase text-neutral-400">
+                  OMSET PENJUALAN
+                </span>
+                <DollarSign className="w-4 h-4 text-emerald-500" />
+              </div>
+              <p className="text-2xl font-bold font-mono tracking-tight text-neutral-100">
+                Rp{" "}
+                <CountUp
+                  end={metrics.grossOmset}
+                  duration={1.2}
+                  separator="."
+                  decimal=","
+                />
+              </p>
+              <div className="flex items-center justify-between text-[10px] font-mono pt-1 border-t border-neutral-800/80">
+                <span className="text-neutral-500">Nominal Retur:</span>
+                <span className="font-bold text-red-400 bg-red-950/40 px-1.5 py-0.5 rounded border border-red-900/40 flex items-center gap-1">
+                  <RotateCcw className="w-3 h-3" />
+                  -Rp {metrics.returnOmset.toLocaleString("id-ID")}
+                </span>
+              </div>
             </div>
-            <p className="text-3xl font-extralight tracking-tight text-neutral-900 dark:text-neutral-100">
-              Rp{" "}
-              <CountUp
-                end={164000000}
-                duration={1.5}
-                separator="."
-                decimal=","
-              />
-            </p>
-            <p className="text-[10px] font-extralight text-emerald-600 dark:text-emerald-400">
-              +14.2% dibanding periode sebelumnya
-            </p>
-          </div>
-        ) : (
-          <div className="border border-neutral-200 dark:border-neutral-800/80 p-6 space-y-3 bg-neutral-100/50 dark:bg-neutral-900/20 opacity-70">
-            <div className="flex items-center justify-between text-neutral-400">
-              <span className="text-[10px] font-extralight tracking-widest uppercase">
-                OMSET PENJUALAN
-              </span>
-              <EyeOff className="w-4 h-4" />
-            </div>
-            <p className="text-sm font-light text-neutral-400 italic">
-              Akses terbatas untuk Admin
-            </p>
-            <p className="text-[10px] font-extralight text-neutral-400">
-              Membutuhkan hak akses Owner
-            </p>
-          </div>
-        )}
 
-        {/* Card 2: Laba Bersih */}
-        {isOwner ? (
-          <div className="border border-neutral-200 dark:border-neutral-800/80 p-6 space-y-3 bg-white dark:bg-neutral-900/40">
-            <div className="flex items-center justify-between text-neutral-500">
-              <span className="text-[10px] font-extralight tracking-widest uppercase">
-                ESTIMASI LABA BERSIH
-              </span>
-              <TrendingUp className="w-4 h-4 text-emerald-500" />
-            </div>
-            <p className="text-3xl font-extralight tracking-tight text-neutral-900 dark:text-neutral-100">
-              Rp{" "}
-              <CountUp
-                end={48900000}
-                duration={1.5}
-                separator="."
-                decimal=","
-              />
-            </p>
-            <p className="text-[10px] font-extralight text-emerald-600 dark:text-emerald-400">
-              Margin bersih ~29.8%
-            </p>
-          </div>
-        ) : (
-          <div className="border border-neutral-200 dark:border-neutral-800/80 p-6 space-y-3 bg-neutral-100/50 dark:bg-neutral-900/20 opacity-70">
-            <div className="flex items-center justify-between text-neutral-400">
-              <span className="text-[10px] font-extralight tracking-widest uppercase">
-                ESTIMASI LABA BERSIH
-              </span>
-              <EyeOff className="w-4 h-4" />
-            </div>
-            <p className="text-sm font-light text-neutral-400 italic">
-              Akses terbatas untuk Admin
-            </p>
-            <p className="text-[10px] font-extralight text-neutral-400">
-              Membutuhkan hak akses Owner
-            </p>
-          </div>
-        )}
-
-        {/* Card 3: Total Qty Terjual */}
-        <div className="border border-neutral-200 dark:border-neutral-800/80 p-6 space-y-3 bg-white dark:bg-neutral-900/40">
-          <div className="flex items-center justify-between text-neutral-500">
-            <span className="text-[10px] font-extralight tracking-widest uppercase">
-              TOTAL QTY TERJUAL
-            </span>
-            <Shirt className="w-4 h-4 text-neutral-500" />
-          </div>
-          <p className="text-3xl font-extralight tracking-tight text-neutral-900 dark:text-neutral-100">
-            <CountUp end={3850} duration={1.5} separator="." />{" "}
-            <span className="text-xs font-light text-neutral-500">Pcs</span>
-          </p>
-          <p className="text-[10px] font-extralight text-neutral-500">
-            Terdistribusi ke kanal marketplace
-          </p>
-        </div>
-
-        {/* Card 4: Total Stok Barang Ready */}
-        <div className="border border-neutral-200 dark:border-neutral-800/80 p-6 space-y-3 bg-white dark:bg-neutral-900/40">
-          <div className="flex items-center justify-between text-neutral-500">
-            <span className="text-[10px] font-extralight tracking-widest uppercase">
-              TOTAL STOK BARANG READY
-            </span>
-            <PackageCheck className="w-4 h-4 text-neutral-500" />
-          </div>
-          <p className="text-3xl font-extralight tracking-tight text-neutral-900 dark:text-neutral-100">
-            <CountUp end={5420} duration={1.5} separator="." />{" "}
-            <span className="text-xs font-light text-neutral-500">Pcs</span>
-          </p>
-          <p className="text-[10px] font-extralight text-neutral-500">
-            Pakaian jadi di etalase siap kirim
-          </p>
-        </div>
-      </div>
-
-      {/* Grafik Batang Per Hari (Tgl 1 - Tgl Akhir Bulan) */}
-      <div className="border border-neutral-200 dark:border-neutral-800/80 p-6 bg-white dark:bg-neutral-900/40 space-y-4">
-        <div className="flex justify-between items-center pb-3 border-b border-neutral-200 dark:border-neutral-800/80">
-          <h3 className="text-xs font-light uppercase tracking-widest text-neutral-900 dark:text-neutral-100">
-            GRAFIK HARIAN OMSET & LABA BERSIH (TGL 1 - {totalDays})
-          </h3>
-          <span className="text-[10px] font-extralight text-neutral-400 uppercase">
-            {isOwner ? "AKSES OWNER VERIFIED" : "DISEMBUNYIKAN UNTUK ADMIN"}
-          </span>
-        </div>
-
-        <div className="h-80 w-full">
-          {isOwner ? (
-            <Bar data={chartData} options={chartOptions} />
-          ) : (
-            <div className="h-full flex items-center justify-center bg-neutral-100/30 dark:bg-neutral-900/20 border border-dashed border-neutral-200 dark:border-neutral-800">
-              <p className="text-xs font-light text-neutral-400 italic flex items-center gap-2">
-                <EyeOff className="w-4 h-4" /> Grafik pendapatan harian
-                disembunyikan untuk akses Admin.
+            {/* CARD 2: HPP */}
+            <div className="border border-neutral-800/90 p-5 space-y-2 bg-neutral-900/60 rounded-xl shadow-sm">
+              <div className="flex items-center justify-between text-neutral-500">
+                <span className="text-[10px] font-mono font-bold tracking-wider uppercase text-neutral-400">
+                  HPP (POKOK PRODUKSI)
+                </span>
+                <Coins className="w-4 h-4 text-amber-500" />
+              </div>
+              <p className="text-2xl font-bold font-mono tracking-tight text-amber-400">
+                Rp{" "}
+                <CountUp
+                  end={metrics.totalHpp}
+                  duration={1.2}
+                  separator="."
+                  decimal=","
+                />
+              </p>
+              <p className="text-[10px] font-mono text-neutral-500">
+                BOM Material Bahan + Ongkos Jasa
               </p>
             </div>
-          )}
-        </div>
-      </div>
 
-      {/* Tabel Singkat Ringkasan */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Tabel Top Selling Products */}
-        <div className="border border-neutral-200 dark:border-neutral-800/80 bg-white dark:bg-neutral-900/40">
-          <div className="p-4 border-b border-neutral-200 dark:border-neutral-800/80 flex justify-between items-center">
-            <span className="text-xs font-extralight tracking-widest text-neutral-500 uppercase flex items-center gap-2">
-              <PackageCheck className="w-3.5 h-3.5 text-neutral-400" />
-              PRODUK TERLARIS (TOP SALES)
-            </span>
-            <span className="text-[10px] font-extralight text-neutral-400">
-              BULAN {selectedMonth}/{selectedYear}
-            </span>
-          </div>
-          <div className="divide-y divide-neutral-200 dark:divide-neutral-800/80 text-xs font-light">
-            <div className="p-3.5 flex justify-between items-center">
-              <div>
-                <p className="text-neutral-900 dark:text-neutral-100">
-                  Mukena Silk Premium (MKN-SLK-BLK)
-                </p>
-                <p className="text-[10px] text-neutral-500">Varian: Black</p>
+            {/* CARD 3: KEUNTUNGAN BERSIH */}
+            <div className="border border-neutral-800/90 p-5 space-y-2 bg-neutral-900/60 rounded-xl shadow-sm">
+              <div className="flex items-center justify-between text-neutral-500">
+                <span className="text-[10px] font-mono font-bold tracking-wider uppercase text-neutral-400">
+                  KEUNTUNGAN BERSIH
+                </span>
+                <TrendingUp className="w-4 h-4 text-emerald-500" />
               </div>
-              <span className="font-normal text-neutral-900 dark:text-neutral-100">
-                1.240 Pcs
-              </span>
+              <p
+                className={`text-2xl font-bold font-mono tracking-tight ${metrics.netProfit < 0 ? "text-red-500" : "text-emerald-400"}`}
+              >
+                Rp{" "}
+                <CountUp
+                  end={metrics.netProfit}
+                  duration={1.2}
+                  separator="."
+                  decimal=","
+                />
+              </p>
+              <p className="text-[10px] font-mono text-neutral-500">
+                Selisih bersih (Omset - Retur - HPP)
+              </p>
             </div>
-            <div className="p-3.5 flex justify-between items-center">
-              <div>
-                <p className="text-neutral-900 dark:text-neutral-100">
-                  Hoodie Oversize Heavyweight (HD-OVS-GREY)
-                </p>
-                <p className="text-[10px] text-neutral-500">
-                  Varian: Light Grey
-                </p>
-              </div>
-              <span className="font-normal text-neutral-900 dark:text-neutral-100">
-                890 Pcs
-              </span>
-            </div>
-            <div className="p-3.5 flex justify-between items-center">
-              <div>
-                <p className="text-neutral-900 dark:text-neutral-100">
-                  Gamis Rayon Premium (GMS-RYN-NVY)
-                </p>
-                <p className="text-[10px] text-neutral-500">Varian: Navy</p>
-              </div>
-              <span className="font-normal text-neutral-900 dark:text-neutral-100">
-                650 Pcs
-              </span>
-            </div>
-          </div>
-        </div>
 
-        {/* Tabel Status SPK Produksi Aktif */}
-        <div className="border border-neutral-200 dark:border-neutral-800/80 bg-white dark:bg-neutral-900/40">
-          <div className="p-4 border-b border-neutral-200 dark:border-neutral-800/80 flex justify-between items-center">
-            <span className="text-xs font-extralight tracking-widest text-neutral-500 uppercase flex items-center gap-2">
-              <Shirt className="w-3.5 h-3.5 text-neutral-400" />
-              STATUS SPK PRODUKSI AKTIF
-            </span>
-            <a
-              href="#"
-              className="text-[10px] font-extralight text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 flex items-center gap-0.5"
-            >
-              LIHAT SEMUA <ArrowUpRight className="w-3 h-3" />
-            </a>
-          </div>
-          <div className="divide-y divide-neutral-200 dark:divide-neutral-800/80 text-xs font-light">
-            <div className="p-3.5 flex justify-between items-center">
-              <div>
-                <p className="text-neutral-900 dark:text-neutral-100">
-                  SPK-2026-0901 (Kemeja Linen)
-                </p>
-                <p className="text-[10px] text-neutral-500">
-                  Tahap: Sewing (Penjahitan)
-                </p>
+            {/* CARD 4: QTY TERJUAL / RETUR */}
+            <div className="border border-neutral-800/90 p-5 space-y-2 bg-neutral-900/60 rounded-xl shadow-sm">
+              <div className="flex items-center justify-between text-neutral-500">
+                <span className="text-[10px] font-mono font-bold tracking-wider uppercase text-neutral-400">
+                  QTY TERJUAL / RETUR
+                </span>
+                <PackageCheck className="w-4 h-4 text-blue-500" />
               </div>
-              <span className="text-[10px] border border-emerald-300 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 px-2 py-0.5">
-                ON PROGRESS (80%)
-              </span>
-            </div>
-            <div className="p-3.5 flex justify-between items-center">
-              <div>
-                <p className="text-neutral-900 dark:text-neutral-100">
-                  SPK-2026-0902 (Mukena Travel)
+              <div className="flex items-baseline justify-between font-mono">
+                <p className="text-2xl font-bold text-neutral-100">
+                  <CountUp
+                    end={metrics.totalQtySold}
+                    duration={1.2}
+                    separator="."
+                  />{" "}
+                  <span className="text-xs font-normal text-neutral-500">
+                    Pcs
+                  </span>
                 </p>
-                <p className="text-[10px] text-neutral-500">
-                  Tahap: Cutting (Pemotongan)
-                </p>
+                <div className="flex items-center gap-1 text-xs font-bold text-red-400 bg-red-950/40 px-1.5 py-0.5 rounded border border-red-900/50">
+                  <RotateCcw className="w-3 h-3" />
+                  <span>{metrics.totalQtyReturned} Retur</span>
+                </div>
               </div>
-              <span className="text-[10px] border border-amber-300 dark:border-amber-800 text-amber-600 dark:text-amber-400 px-2 py-0.5">
-                CUTTING (35%)
-              </span>
-            </div>
-            <div className="p-3.5 flex justify-between items-center">
-              <div>
-                <p className="text-neutral-900 dark:text-neutral-100">
-                  SPK-2026-0903 (Kaos Polos Combed)
-                </p>
-                <p className="text-[10px] text-neutral-500">
-                  Tahap: Finishing & QC
-                </p>
-              </div>
-              <span className="text-[10px] border border-neutral-300 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 px-2 py-0.5">
-                QC CHECK
-              </span>
+              <p className="text-[10px] font-mono text-neutral-500">
+                Total barang keluar & retur marketplace
+              </p>
             </div>
           </div>
-        </div>
-      </div>
+
+          {/* GRAFIK BAR CHART */}
+          <div className="border border-neutral-800 p-5 bg-neutral-900/60 rounded-xl space-y-3">
+            <div className="flex justify-between items-center pb-2 border-b border-neutral-800 font-mono">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-neutral-200">
+                GRAFIK HARIAN OMSET BERSIH VS KEUNTUNGAN (TGL 1 -{" "}
+                {metrics.totalDaysInMonth})
+              </h3>
+              <span className="text-[10px] text-neutral-500 uppercase">
+                REALTIME REVENUE & PROFIT
+              </span>
+            </div>
+
+            <div className="h-72 w-full pt-2">
+              <Bar data={chartData} options={chartOptions} />
+            </div>
+          </div>
+
+          {/* TABEL PRODUK TERLARIS */}
+          <div className="border border-neutral-800 bg-neutral-900/60 rounded-xl overflow-hidden">
+            <div className="p-4 border-b border-neutral-800 flex justify-between items-center font-mono">
+              <span className="text-xs font-bold tracking-wider text-amber-500 uppercase flex items-center gap-2">
+                <Shirt className="w-4 h-4" />
+                PRODUK TERLARIS PERIODE INI
+              </span>
+              <span className="text-[10px] text-neutral-500">
+                BULAN {selectedMonth}/{selectedYear}
+              </span>
+            </div>
+
+            <div className="divide-y divide-neutral-800 text-xs font-mono">
+              {productsList.length === 0 && !isLoadingProducts ? (
+                <div className="p-6 text-center text-neutral-500 italic">
+                  Belum ada penjualan tercatat pada periode ini.
+                </div>
+              ) : (
+                productsList.map((p, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3.5 flex justify-between items-center hover:bg-neutral-800/40 transition-colors"
+                  >
+                    <div>
+                      <p className="font-bold text-neutral-100">
+                        {p.productName}
+                      </p>
+                      <p className="text-[10px] text-neutral-500">
+                        SKU: {p.sku}
+                      </p>
+                    </div>
+                    <span className="font-bold text-amber-400 bg-amber-950/40 px-2 py-1 rounded border border-amber-900/50">
+                      {p.totalQty.toLocaleString("id-ID")} Pcs Terjual
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {hasMore && (
+              <div className="p-3 border-t border-neutral-800 text-center font-mono">
+                <button
+                  onClick={handleLoadMore}
+                  disabled={isLoadingProducts}
+                  className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-amber-400 font-bold rounded text-xs inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                >
+                  {isLoadingProducts ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )}
+                  <span>TAMPILKAN LEBIH BANYAK</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
+  );
+}
+
+// Wrapper Suspense
+export function DashboardOverview() {
+  return (
+    <Suspense fallback={<DashboardSkeleton />}>
+      <DashboardContent />
+    </Suspense>
   );
 }

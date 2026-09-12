@@ -33,7 +33,7 @@ export async function getAllPendingIncomingVariantsAction() {
       .where(
         and(
           eq(cuttingTargets.vendorId, vendorId),
-          eq(cuttingTargets.status, "started"),
+
         ),
       );
 

@@ -151,9 +151,10 @@ export const ProductBomTab: React.FC<ProductBomTabProps> = ({
                         value={pt.colorMode || "matching_sku"}
                         onChange={(e) => {
                           const updated = { ...partsPerSize };
-                          updated[activeBomSizeId][pIdx].colorMode =
-                            e.target.value;
-                          if (e.target.value === "matching_sku") {
+                          const newMode = e.target.value;
+                          updated[activeBomSizeId][pIdx].colorMode = newMode;
+
+                          if (newMode === "matching_sku") {
                             updated[activeBomSizeId][pIdx].fixedColorId = "";
                           } else if (
                             !updated[activeBomSizeId][pIdx].fixedColorId
@@ -303,6 +304,7 @@ export const ProductBomTab: React.FC<ProductBomTabProps> = ({
                         const firstMat = materialOptions[0];
                         updated[activeBomSizeId][pIdx].materials.push({
                           materialId: firstMat?.id || "",
+                          materialColorId: null, // SET NULL AGAR TIDAK MENGIRIM ID MASTER WARNA (colors.id)
                           quantity: 1,
                           consumptionUnitId:
                             firstMat?.baseUnitId || unitOptions[0]?.id || "",

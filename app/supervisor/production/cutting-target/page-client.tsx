@@ -22,8 +22,6 @@ import {
   Ban,
   Play,
   XCircle,
-  Scissors,
-  Shirt,
   Sparkles,
 } from "lucide-react";
 
@@ -144,14 +142,14 @@ export function CuttingTargetPageClient({
       <div className="grid grid-cols-2 gap-2">
         <button
           onClick={() => setIsModalOpen(true)}
-          className="py-3 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold rounded flex items-center justify-center gap-2 uppercase tracking-wider text-xs shadow transition-colors"
+          className="py-3 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold rounded flex items-center justify-center gap-2 uppercase tracking-wider text-xs shadow transition-colors font-mono"
         >
           <Plus className="w-4 h-4" /> BUAT TARGET POTONG
         </button>
 
         <Link
           href="/supervisor/production/tracking"
-          className="py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded flex items-center justify-center gap-2 uppercase tracking-wider text-xs shadow transition-colors"
+          className="py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded flex items-center justify-center gap-2 uppercase tracking-wider text-xs shadow transition-colors font-mono"
         >
           <Activity className="w-4 h-4" /> TRACKING PRODUKSI
         </Link>
@@ -160,12 +158,12 @@ export function CuttingTargetPageClient({
       {/* List Target Cards */}
       <div className="space-y-3">
         {isLoading ? (
-          <div className="p-8 text-center text-neutral-500 flex items-center justify-center gap-2">
+          <div className="p-8 text-center text-neutral-500 flex items-center justify-center gap-2 font-mono">
             <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
             <span>Memuat target potongan...</span>
           </div>
         ) : targets.length === 0 ? (
-          <div className="p-8 text-center text-neutral-500 bg-neutral-900/50 border border-neutral-800 rounded">
+          <div className="p-8 text-center text-neutral-500 bg-neutral-900/50 border border-neutral-800 rounded font-mono">
             Belum ada target potongan pada tanggal ini.
           </div>
         ) : (
@@ -285,7 +283,8 @@ export function CuttingTargetPageClient({
                                         DIPOTONG
                                       </span>
                                       <span className="font-bold text-amber-400">
-                                        {pt.cutQty} / {partTarget}
+                                        {pt.cutQty ?? pt.cuttingQty ?? 0} /{" "}
+                                        {partTarget}
                                       </span>
                                     </div>
 
@@ -294,7 +293,11 @@ export function CuttingTargetPageClient({
                                         DIJAHIT
                                       </span>
                                       <span className="font-bold text-blue-400">
-                                        {pt.sewQty} / {partTarget}
+                                        {pt.sewQty ??
+                                          pt.sewingQty ??
+                                          pt.sewedQty ??
+                                          0}{" "}
+                                        / {partTarget}
                                       </span>
                                     </div>
 
@@ -303,7 +306,8 @@ export function CuttingTargetPageClient({
                                         OVERDECK
                                       </span>
                                       <span className="font-bold text-purple-400">
-                                        {pt.ovdQty} / {partTarget}
+                                        {pt.ovdQty ?? pt.overdeckQty ?? 0} /{" "}
+                                        {partTarget}
                                       </span>
                                     </div>
                                   </div>
@@ -319,7 +323,7 @@ export function CuttingTargetPageClient({
 
                 {/* Actions Mandor: CLOSING / FINISH & CANCEL */}
                 {isStarted && (
-                  <div className="flex justify-end gap-2 pt-2 border-t border-neutral-800/80">
+                  <div className="flex justify-end gap-2 pt-2 border-t border-neutral-800/80 font-mono">
                     <button
                       onClick={() => setTargetToCancel(tg.id)}
                       className="px-3 py-1.5 bg-neutral-950 border border-red-900/50 hover:bg-red-950/30 text-red-400 font-bold text-[10px] rounded flex items-center gap-1 uppercase transition-colors"

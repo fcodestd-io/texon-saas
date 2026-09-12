@@ -28,6 +28,9 @@ import {
   Shirt,
   Undo,
   Redo,
+  Layers,
+  Boxes,
+  Sparkles,
 } from "lucide-react";
 
 import {
@@ -54,9 +57,17 @@ export function ProductClient({
     initialProducts || [],
   );
   const [searchQuery, setSearchQuery] = useState("");
+
+  // NESTED ACCORDION STATES
   const [openAccordions, setOpenAccordions] = useState<Record<string, boolean>>(
     {},
   );
+  const [openVariantAccordions, setOpenVariantAccordions] = useState<
+    Record<string, boolean>
+  >({});
+  const [openPartAccordions, setOpenPartAccordions] = useState<
+    Record<string, boolean>
+  >({});
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any | null>(null);
@@ -67,7 +78,7 @@ export function ProductClient({
   const [selectedSizes, setSelectedSizes] = useState<string[]>([]);
   const [selectedColors, setSelectedColors] = useState<string[]>([]);
   const [variantConfigs, setVariantConfigs] = useState<
-    Record<string, { price: number; barcode?: string }>
+    Record<string, { price: number; finishingPrice?: number; barcode?: string }>
   >({});
   const [partsPerSize, setPartsPerSize] = useState<Record<string, any[]>>({});
 
@@ -83,7 +94,10 @@ export function ProductClient({
     basePrice: number;
     selectedSizes: string[];
     selectedColors: string[];
-    variantConfigs: Record<string, { price: number; barcode?: string }>;
+    variantConfigs: Record<
+      string,
+      { price: number; finishingPrice?: number; barcode?: string }
+    >;
     partsPerSize: Record<string, any[]>;
   }
 
@@ -100,7 +114,6 @@ export function ProductClient({
     partsPerSize,
   };
 
-  // Capture History Snapshot
   useEffect(() => {
     if (!isModalOpen) return;
     if (isUndoRedoAction.current) {
@@ -181,7 +194,6 @@ export function ProductClient({
   );
   const formRef = useRef<HTMLFormElement>(null);
 
-  // KEYBOARD SHORTCUTS: Ctrl + S, Ctrl + Z, Ctrl + Y
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isModalOpen) return;
@@ -230,7 +242,11 @@ export function ProductClient({
   };
 
   const calculateVariantHPP = (variant: any) => {
-    if (!variant.parts || variant.parts.length === 0) return 0;
+    const finishingPrice = parseFloat(variant.finishingPrice || 0);
+
+    if (!variant.parts || variant.parts.length === 0) {
+      return finishingPrice;
+    }
 
     let totalJasa = 0;
     let totalMaterial = 0;
@@ -253,7 +269,7 @@ export function ProductClient({
       }
     });
 
-    return totalJasa + totalMaterial;
+    return totalJasa + totalMaterial + finishingPrice;
   };
 
   useEffect(() => {
@@ -298,10 +314,13 @@ export function ProductClient({
     setSelectedSizes(defaultSizes);
     setSelectedColors(defaultColors);
 
-    const initConfigs: Record<string, { price: number }> = {};
+    const initConfigs: Record<
+      string,
+      { price: number; finishingPrice: number }
+    > = {};
     defaultSizes.forEach((sId) => {
       defaultColors.forEach((cId) => {
-        initConfigs[`${sId}_${cId}`] = { price: 0 };
+        initConfigs[`${sId}_${cId}`] = { price: 0, finishingPrice: 0 };
       });
     });
     setVariantConfigs(initConfigs);
@@ -348,7 +367,6 @@ export function ProductClient({
     });
     setPartsPerSize(initPartsPerSize);
 
-    // Reset History State
     setHistory([]);
     setHistoryIndex(-1);
 
@@ -371,10 +389,14 @@ export function ProductClient({
     setSelectedSizes(existingSizeIds);
     setSelectedColors(existingColorIds);
 
-    const configs: Record<string, { price: number; barcode?: string }> = {};
+    const configs: Record<
+      string,
+      { price: number; finishingPrice: number; barcode?: string }
+    > = {};
     product.variants.forEach((v: any) => {
       configs[`${v.sizeId}_${v.colorId}`] = {
         price: parseFloat(v.price || 0),
+        finishingPrice: parseFloat(v.finishingPrice || 0),
         barcode: v.barcode || "",
       };
     });
@@ -392,13 +414,16 @@ export function ProductClient({
           sewingPrice: parseFloat(pt.sewingPrice || 0),
           overdeckPrice: parseFloat(pt.overdeckPrice || 0),
           listPrice: parseFloat(pt.listPrice || 0),
-          colorMode: pt.colorMode || "matching_sku",
-          fixedColorId: pt.fixedColorId || "",
+          colorMode: pt.colorMode || pt.color_mode || "matching_sku",
+          fixedColorId: pt.fixedColorId || pt.fixed_color_id || "",
           materials: (pt.materials || []).map((m: any) => ({
-            materialId: m.materialId,
+            materialId: m.materialId || m.material_id,
+            materialColorId: m.materialColorId || m.material_color_id || null,
             quantity: parseFloat(m.quantity || 0),
-            consumptionUnitId: m.consumptionUnitId,
-            wastePercentage: parseFloat(m.wastePercentage || 0),
+            consumptionUnitId: m.consumptionUnitId || m.consumption_unit_id,
+            wastePercentage: parseFloat(
+              m.wastePercentage || m.waste_percentage || 0,
+            ),
           })),
         }));
       } else {
@@ -533,56 +558,6 @@ export function ProductClient({
 
   return (
     <div className="space-y-6">
-      <style jsx global>{`
-        @media print {
-          @page {
-            size: A4 portrait;
-            margin: 10mm 8mm; /* Margin kertas A4 */
-          }
-
-          /* Sembunyikan seluruh elemen UI dashboard */
-          body * {
-            visibility: hidden;
-          }
-
-          /* Tampilkan hanya area cetak thermal */
-          #thermal-print-area,
-          #thermal-print-area * {
-            visibility: visible;
-          }
-
-          #thermal-print-area {
-            position: static !important; /* MENGUBAH position: absolute menjadi static agar mendukung multi-halaman */
-            width: 100% !important;
-            max-height: none !important; /* Menghilangkan batasan scrollbar saat cetak */
-            overflow: visible !important;
-            display: grid !important;
-            grid-template-columns: repeat(
-              2,
-              1fr
-            ) !important; /* 2 Barcode per baris */
-            gap: 4mm 6mm !important; /* Jarak antar stiker */
-            background: transparent !important;
-            padding: 0 !important;
-          }
-
-          .thermal-sticker-print {
-            border: 1px solid #000 !important;
-            padding: 2.5mm !important;
-            height: 35mm !important;
-            display: flex !important;
-            flex-direction: column !important;
-            justify-content: space-between !important;
-            align-items: center !important;
-            box-sizing: border-box !important;
-
-            /* KUNCI MULTI-KERTAS: Mencegah stiker terpotong di tengah lipatan/pergantian halaman */
-            page-break-inside: avoid !important;
-            break-inside: avoid !important;
-          }
-        }
-      `}</style>
-
       {/* Control Bar */}
       <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 pb-4 border-b border-neutral-200 dark:border-neutral-800/80">
         <div className="relative flex-1 max-w-md">
@@ -604,7 +579,7 @@ export function ProductClient({
         </button>
       </div>
 
-      {/* Accordion Table */}
+      {/* ACCORDION TABLE (NESTED 3 LEVEL) */}
       <div className="border border-neutral-200 dark:border-neutral-800/80 bg-white dark:bg-neutral-900/40 divide-y divide-neutral-200 dark:divide-neutral-800/80">
         {productsList.length === 0 ? (
           <div className="p-16 text-center space-y-3">
@@ -626,9 +601,6 @@ export function ProductClient({
               (acc: number, v: any) => acc + calculateVariantHPP(v),
               0,
             );
-            const totalMargin = totalOmset - totalHpp;
-            const avgMarginPct =
-              totalOmset > 0 ? (totalMargin / totalOmset) * 100 : 0;
             const grandTotalStock = variants.reduce(
               (acc: number, v: any) => acc + parseFloat(v.stock || "0"),
               0,
@@ -636,6 +608,7 @@ export function ProductClient({
 
             return (
               <div key={prod.id} className="transition-colors">
+                {/* LEVEL 1: PRODUK INDUK */}
                 <div className="p-4 flex flex-col md:flex-row justify-between md:items-center gap-4 bg-neutral-50/50 dark:bg-neutral-900/30">
                   <div className="flex items-center gap-3">
                     <button
@@ -648,7 +621,7 @@ export function ProductClient({
                       className="p-1 text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100"
                     >
                       {isOpen ? (
-                        <ChevronDown className="w-4 h-4" />
+                        <ChevronDown className="w-4 h-4 text-amber-500" />
                       ) : (
                         <ChevronRight className="w-4 h-4" />
                       )}
@@ -690,18 +663,8 @@ export function ProductClient({
                         <span className="text-[9px] uppercase text-neutral-400 block font-sans">
                           ESTIMASI HPP
                         </span>
-                        <span className="text-amber-500">
+                        <span className="text-amber-500 font-medium">
                           Rp {formatRupiah(totalHpp)}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] uppercase text-neutral-400 block font-sans">
-                          ESTIMASI MARGIN
-                        </span>
-                        <span className="text-emerald-500 font-semibold">
-                          {totalOmset === 0
-                            ? "-"
-                            : `Rp ${formatRupiah(totalMargin)} (${avgMarginPct.toFixed(1)}%)`}
                         </span>
                       </div>
                     </div>
@@ -737,72 +700,347 @@ export function ProductClient({
                   </div>
                 </div>
 
+                {/* LEVEL 2: ACCORDION LIST SKU VARIAN */}
                 {isOpen && (
-                  <div className="bg-neutral-100/30 dark:bg-neutral-950/60 pl-8 pr-4 py-3 divide-y divide-neutral-200/50 dark:divide-neutral-800/40">
+                  <div className="bg-neutral-100/30 dark:bg-neutral-950/60 pl-6 pr-4 py-3 divide-y divide-neutral-200/50 dark:divide-neutral-800/40">
                     {variants.map((v: any) => {
+                      const isVarOpen = Boolean(openVariantAccordions[v.id]);
                       const sellingPrice = parseFloat(v.price || "0");
+                      const finishingPrice = parseFloat(
+                        v.finishingPrice || "0",
+                      );
                       const hpp = calculateVariantHPP(v);
-                      const margin = sellingPrice - hpp;
-                      const marginPct =
-                        sellingPrice > 0 ? (margin / sellingPrice) * 100 : 0;
                       const stockVal = parseFloat(v.stock || "0");
+                      const partsList = v.parts || [];
 
                       return (
-                        <div
-                          key={v.id}
-                          className="py-2.5 flex justify-between items-center text-xs"
-                        >
-                          <div className="space-y-0.5">
-                            <span className="font-mono text-xs text-neutral-900 dark:text-neutral-100 font-semibold">
-                              {v.sku}
-                            </span>
-                            <span className="text-[10px] text-neutral-400 block">
-                              Size: {v.sizeName} | Warna: {v.colorName} |
-                              Barcode: {v.barcode || v.sku}
-                            </span>
+                        <div key={v.id} className="py-3 space-y-2">
+                          <div className="flex justify-between items-center text-xs">
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() =>
+                                  setOpenVariantAccordions((p) => ({
+                                    ...p,
+                                    [v.id]: !p[v.id],
+                                  }))
+                                }
+                                className="p-1 text-neutral-400 hover:text-neutral-100"
+                              >
+                                {isVarOpen ? (
+                                  <ChevronDown className="w-3.5 h-3.5 text-blue-400" />
+                                ) : (
+                                  <ChevronRight className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+
+                              <div className="space-y-0.5">
+                                <span className="font-mono text-xs text-neutral-900 dark:text-neutral-100 font-semibold">
+                                  {v.sku}
+                                </span>
+                                <span className="text-[10px] text-neutral-400 block">
+                                  Size: {v.sizeName} | Warna: {v.colorName} |
+                                  Barcode: {v.barcode || v.sku}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-6 font-mono text-xs">
+                              <div className="text-right">
+                                <span className="text-[9px] text-neutral-400 uppercase block font-sans">
+                                  STOK READY
+                                </span>
+                                <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                                  {stockVal} Pcs
+                                </span>
+                              </div>
+
+                              <div className="text-right">
+                                <span className="text-[9px] text-neutral-400 uppercase block font-sans">
+                                  HARGA JUAL
+                                </span>
+                                <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                                  {sellingPrice === 0
+                                    ? "-"
+                                    : `Rp ${formatRupiah(sellingPrice)}`}
+                                </span>
+                              </div>
+
+                              <div className="text-right">
+                                <span className="text-[9px] text-neutral-400 uppercase block font-sans">
+                                  HPP VARIAN
+                                </span>
+                                <span className="text-amber-500 font-semibold">
+                                  Rp {formatRupiah(hpp)}
+                                </span>
+                              </div>
+                            </div>
                           </div>
 
-                          <div className="flex items-center gap-6 font-mono text-xs">
-                            <div className="text-right">
-                              <span className="text-[9px] text-neutral-400 uppercase block font-sans">
-                                STOK READY
-                              </span>
-                              <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                                {stockVal} Pcs
-                              </span>
-                            </div>
+                          {/* LEVEL 3: ACCORDION LIST PART & BOM BAHAN PER SKU */}
+                          {isVarOpen && (
+                            <div className="mt-2 ml-6 p-3 bg-neutral-900/90 border border-neutral-800 space-y-3 rounded-sm">
+                              {/* BOX FINISHING PRICE KHUSUS DALAM ACCORDION */}
+                              <div className="p-2.5 bg-neutral-950 border border-amber-900/40 flex justify-between items-center text-xs">
+                                <div className="flex items-center gap-2">
+                                  <Sparkles className="w-4 h-4 text-amber-500" />
+                                  <span className="text-neutral-300 font-medium">
+                                    Ongkos Finishing (Kemasan, Hangtag, Quality
+                                    Control) SKU Ini:
+                                  </span>
+                                </div>
+                                <span className="font-mono font-semibold text-amber-400">
+                                  Rp {formatRupiah(finishingPrice)}
+                                </span>
+                              </div>
 
-                            <div className="text-right">
-                              <span className="text-[9px] text-neutral-400 uppercase block font-sans">
-                                HARGA JUAL
-                              </span>
-                              <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                                {sellingPrice === 0
-                                  ? "-"
-                                  : `Rp ${formatRupiah(sellingPrice)}`}
-                              </span>
-                            </div>
+                              <div className="flex items-center justify-between pb-2 border-b border-neutral-800">
+                                <span className="text-[11px] font-medium text-neutral-300 flex items-center gap-1.5 uppercase tracking-wider">
+                                  <Layers className="w-3.5 h-3.5 text-blue-400" />
+                                  DETAIL PART & BOM (BILL OF MATERIALS)
+                                </span>
+                                <span className="text-[10px] text-neutral-500 font-mono">
+                                  Total {partsList.length} Part Pola
+                                </span>
+                              </div>
 
-                            <div className="text-right">
-                              <span className="text-[9px] text-neutral-400 uppercase block font-sans">
-                                Harga Produksi
-                              </span>
-                              <span className="text-amber-500">
-                                Rp {formatRupiah(hpp)}
-                              </span>
-                            </div>
+                              {partsList.length === 0 ? (
+                                <p className="text-[11px] text-neutral-500 italic py-2">
+                                  Belum ada part/BOM terdaftar untuk varian ini.
+                                </p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {partsList.map((pt: any) => {
+                                    const isPartOpen = Boolean(
+                                      openPartAccordions[pt.id],
+                                    );
+                                    const cPrice = parseFloat(
+                                      pt.cuttingPrice || 0,
+                                    );
+                                    const sPrice = parseFloat(
+                                      pt.sewingPrice || 0,
+                                    );
+                                    const oPrice = parseFloat(
+                                      pt.overdeckPrice || 0,
+                                    );
+                                    const lPrice = parseFloat(
+                                      pt.listPrice || 0,
+                                    );
+                                    const sumJasaPart =
+                                      cPrice + sPrice + oPrice + lPrice;
+                                    const matList = pt.materials || [];
 
-                            <div className="text-right">
-                              <span className="text-[9px] text-neutral-400 uppercase block font-sans">
-                                ESTIMASI MARGIN
-                              </span>
-                              <span className="text-emerald-500 font-semibold">
-                                {sellingPrice === 0
-                                  ? "-"
-                                  : `Rp ${formatRupiah(margin)} (${marginPct.toFixed(1)}%)`}
-                              </span>
+                                    return (
+                                      <div
+                                        key={pt.id}
+                                        className="border border-neutral-800/80 bg-neutral-950 p-2.5 space-y-2"
+                                      >
+                                        <div className="flex justify-between items-center text-[11px]">
+                                          <div className="flex items-center gap-2">
+                                            <button
+                                              onClick={() =>
+                                                setOpenPartAccordions((p) => ({
+                                                  ...p,
+                                                  [pt.id]: !p[pt.id],
+                                                }))
+                                              }
+                                              className="p-0.5 text-neutral-400 hover:text-neutral-100"
+                                            >
+                                              {isPartOpen ? (
+                                                <ChevronDown className="w-3 h-3 text-emerald-400" />
+                                              ) : (
+                                                <ChevronRight className="w-3 h-3" />
+                                              )}
+                                            </button>
+                                            <span className="font-medium text-neutral-200">
+                                              Part: {pt.name}
+                                            </span>
+                                          </div>
+
+                                          {/* RINGKASAN HARGA JASA BORONGAN PART */}
+                                          <div className="flex items-center gap-4 text-[10px] font-mono">
+                                            <span className="text-neutral-400">
+                                              Cut:{" "}
+                                              <strong className="text-neutral-200">
+                                                Rp {formatRupiah(cPrice)}
+                                              </strong>
+                                            </span>
+                                            <span className="text-neutral-400">
+                                              Sew:{" "}
+                                              <strong className="text-neutral-200">
+                                                Rp {formatRupiah(sPrice)}
+                                              </strong>
+                                            </span>
+                                            <span className="text-neutral-400">
+                                              Ovd:{" "}
+                                              <strong className="text-neutral-200">
+                                                Rp {formatRupiah(oPrice)}
+                                              </strong>
+                                            </span>
+                                            <span className="text-neutral-400">
+                                              Lst:{" "}
+                                              <strong className="text-neutral-200">
+                                                Rp {formatRupiah(lPrice)}
+                                              </strong>
+                                            </span>
+                                            <span className="text-amber-500 pl-2 border-l border-neutral-800">
+                                              Sub Jasa: Rp{" "}
+                                              {formatRupiah(sumJasaPart)}
+                                            </span>
+                                          </div>
+                                        </div>
+
+                                        {/* DETAIL KEBUTUHAN BAHAN BAKU (BOM) */}
+                                        {isPartOpen && (
+                                          <div className="mt-2 pt-2 border-t border-neutral-800/60 pl-5 space-y-1.5">
+                                            <div className="text-[10px] font-medium text-neutral-400 uppercase flex items-center gap-1">
+                                              <Boxes className="w-3 h-3 text-amber-500" />
+                                              BOM Material Bahan Baku:
+                                            </div>
+
+                                            {matList.length === 0 ? (
+                                              <p className="text-[10px] text-neutral-500 italic">
+                                                Tidak ada material bahan baku
+                                                untuk part ini.
+                                              </p>
+                                            ) : (
+                                              <div className="divide-y divide-neutral-900 border border-neutral-900 bg-neutral-900/40">
+                                                {matList.map(
+                                                  (m: any, mIdx: number) => {
+                                                    const pricePerUnit =
+                                                      getMaterialPricePerBaseUnit(
+                                                        m.materialId,
+                                                      );
+                                                    const qty = parseFloat(
+                                                      m.quantity || 0,
+                                                    );
+                                                    const waste = parseFloat(
+                                                      m.wastePercentage || 0,
+                                                    );
+                                                    const sub =
+                                                      qty *
+                                                      pricePerUnit *
+                                                      (1 + waste / 100);
+                                                    const matObj =
+                                                      materialOptions.find(
+                                                        (matItem) =>
+                                                          matItem.id ===
+                                                          m.materialId,
+                                                      );
+
+                                                    // LOGIKA PENENTUAN WARNA KHUSUS KAIN & BENANG
+                                                    const matCategory =
+                                                      matObj?.category?.toUpperCase() ||
+                                                      "";
+                                                    const isColorApplicable =
+                                                      matCategory ===
+                                                        "FABRIC" ||
+                                                      matCategory ===
+                                                        "THREAD" ||
+                                                      matCategory === "KAIN" ||
+                                                      matCategory === "BENANG";
+
+                                                    let resolvedColorName = "";
+
+                                                    if (isColorApplicable) {
+                                                      const partColorMode =
+                                                        pt.colorMode ||
+                                                        pt.color_mode;
+                                                      const partFixedColorId =
+                                                        pt.fixedColorId ||
+                                                        pt.fixed_color_id;
+
+                                                      if (
+                                                        m.materialColorId &&
+                                                        colorOptions
+                                                      ) {
+                                                        const matchedColor =
+                                                          colorOptions.find(
+                                                            (c) =>
+                                                              c.id ===
+                                                              m.materialColorId,
+                                                          );
+                                                        resolvedColorName =
+                                                          matchedColor
+                                                            ? matchedColor.name
+                                                            : "";
+                                                      } else if (
+                                                        partColorMode ===
+                                                          "fixed_color" &&
+                                                        partFixedColorId
+                                                      ) {
+                                                        const fixedColor =
+                                                          colorOptions.find(
+                                                            (c) =>
+                                                              c.id ===
+                                                              partFixedColorId,
+                                                          );
+                                                        resolvedColorName =
+                                                          fixedColor
+                                                            ? fixedColor.name
+                                                            : "";
+                                                      } else {
+                                                        resolvedColorName =
+                                                          v.colorName || "";
+                                                      }
+                                                    }
+
+                                                    return (
+                                                      <div
+                                                        key={mIdx}
+                                                        className="p-1.5 flex justify-between items-center text-[10px] font-mono"
+                                                      >
+                                                        <span className="text-neutral-300">
+                                                          {matObj ? (
+                                                            <>
+                                                              <span>
+                                                                {matObj.name}
+                                                              </span>
+                                                              {resolvedColorName && (
+                                                                <span className="text-amber-400 font-medium ml-1">
+                                                                  (
+                                                                  {
+                                                                    resolvedColorName
+                                                                  }
+                                                                  )
+                                                                </span>
+                                                              )}
+                                                            </>
+                                                          ) : (
+                                                            "Material ID: " +
+                                                            m.materialId
+                                                          )}
+                                                        </span>
+
+                                                        <div className="flex items-center gap-4 text-neutral-400">
+                                                          <span>
+                                                            Qty: {qty}{" "}
+                                                            {getUnitName(
+                                                              m.consumptionUnitId,
+                                                            )}
+                                                          </span>
+                                                          <span>
+                                                            Waste: {waste}%
+                                                          </span>
+                                                          <span className="text-amber-400">
+                                                            Rp{" "}
+                                                            {formatRupiah(sub)}
+                                                          </span>
+                                                        </div>
+                                                      </div>
+                                                    );
+                                                  },
+                                                )}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
-                          </div>
+                          )}
                         </div>
                       );
                     })}
@@ -827,7 +1065,6 @@ export function ProductClient({
                     : "TAMBAH MASTER PRODUK BARU"}
                 </h3>
 
-                {/* Shortcut Controls Helper Indicator */}
                 <div className="flex items-center gap-1.5 pl-3 border-l border-neutral-800 text-[10px] text-neutral-500 font-mono">
                   <button
                     type="button"

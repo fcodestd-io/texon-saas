@@ -15,13 +15,26 @@ import { auth } from "@/auth";
 import { eq, and, ilike, desc, gte, lte, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 
+// Helper Auth Session
+async function getVendorAndUser() {
+  try {
+    const session = await auth();
+    return {
+      vendorId: (session?.user as any)?.vendorId || null,
+      userId: session?.user?.id || null,
+    };
+  } catch (err) {
+    console.error("Auth Session Error:", err);
+    return { vendorId: null, userId: null };
+  }
+}
+
 // Live Search Material
 export async function searchMaterialsAction(
   category: "fabric" | "thread" | "accessory",
   query: string,
 ) {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return [];
 
   try {
@@ -92,9 +105,7 @@ export async function createPendingPOAction(data: {
     estimatedSubtotal: number;
   }>;
 }) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId, userId } = await getVendorAndUser();
 
   if (!userId || !vendorId)
     return { success: false, message: "Akses ditolak." };
@@ -145,112 +156,160 @@ export async function createPendingPOAction(data: {
   }
 }
 
-// 2. Penerimaan Barang (DELIVERED) - Stok BERTAMBAH + Insert Material Stock Movement
+// 2. Penerimaan Barang (DELIVERED) - Mengkonversi Satuan Beli ke Satuan Pakai untuk Stok
 export async function deliverPOAction(
   poId: string,
   actualItems: Array<{ itemId: string; actualQty: number }>,
 ) {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return { success: false, message: "Akses ditolak." };
 
   try {
-    const [poHeader] = await db
-      .select()
-      .from(purchaseOrders)
-      .where(
-        and(eq(purchaseOrders.id, poId), eq(purchaseOrders.vendorId, vendorId)),
-      )
-      .limit(1);
-
-    if (!poHeader || poHeader.status !== "pending") {
-      return {
-        success: false,
-        message: "PO tidak ditemukan atau sudah diproses.",
-      };
-    }
-
-    let totalActualAmount = 0;
-
-    for (const itemInput of actualItems) {
-      const [poi] = await db
+    await db.transaction(async (tx) => {
+      const [poHeader] = await tx
         .select()
-        .from(purchaseOrderItems)
-        .where(eq(purchaseOrderItems.id, itemInput.itemId))
-        .limit(1);
-
-      if (!poi) continue;
-
-      const unitPrice = parseFloat(poi.unitPrice);
-      const actualSubtotal = itemInput.actualQty * unitPrice;
-      totalActualAmount += actualSubtotal;
-
-      // Update PO Item Detail
-      await db
-        .update(purchaseOrderItems)
-        .set({
-          actualQty: itemInput.actualQty.toString(),
-          actualSubtotal: actualSubtotal.toString(),
-        })
-        .where(eq(purchaseOrderItems.id, itemInput.itemId));
-
-      // Tambah Stok Realtime
-      await db
-        .update(materials)
-        .set({
-          stock: sql`${materials.stock} + ${itemInput.actualQty}`,
-          updatedAt: new Date(),
-        })
+        .from(purchaseOrders)
         .where(
           and(
-            eq(materials.id, poi.materialId),
-            eq(materials.vendorId, vendorId),
+            eq(purchaseOrders.id, poId),
+            eq(purchaseOrders.vendorId, vendorId),
           ),
-        );
+        )
+        .limit(1);
 
-      if (poi.materialColorId) {
-        await db
-          .update(materialColors)
-          .set({
-            stock: sql`${materialColors.stock} + ${itemInput.actualQty}`,
-            updatedAt: new Date(),
-          })
-          .where(eq(materialColors.id, poi.materialColorId));
+      if (!poHeader || poHeader.status !== "pending") {
+        throw new Error("PO tidak ditemukan atau sudah diproses.");
       }
 
-      // INSERT MATERIAL STOCK MOVEMENT
-      await db.insert(materialStockMovements).values({
-        id: `msm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        vendorId,
-        materialId: poi.materialId,
-        materialColorId: poi.materialColorId || null,
-        type: "in",
-        quantity: itemInput.actualQty.toString(),
-        referenceType: "PURCHASE_ORDER",
-        referenceId: poId,
-        notes: `Penerimaan Pembelian (${poHeader.poNumber})`,
-      });
-    }
+      let totalActualAmount = 0;
 
-    const estimatedTotal = parseFloat(poHeader.totalEstimatedAmount || "0");
-    const variance = totalActualAmount - estimatedTotal;
+      for (const itemInput of actualItems) {
+        const [poi] = await tx
+          .select()
+          .from(purchaseOrderItems)
+          .where(eq(purchaseOrderItems.id, itemInput.itemId))
+          .limit(1);
 
-    // Update Header
-    await db
-      .update(purchaseOrders)
-      .set({
-        status: "delivered",
-        totalActualAmount: totalActualAmount.toString(),
-        amountVariance: variance.toString(),
-        deliveredAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(purchaseOrders.id, poId));
+        if (!poi) continue;
+
+        const unitPrice = parseFloat(poi.unitPrice);
+        const actualQtyNum = itemInput.actualQty; // Jumlah dalam Satuan Beli (misal: 10 Roll)
+        const actualSubtotal = actualQtyNum * unitPrice;
+        totalActualAmount += actualSubtotal;
+
+        // Ambil data nilai konversi dari tabel master materials
+        const [matRecord] = await tx
+          .select({
+            stock: materials.stock,
+            conversionValue: materials.conversionValue,
+          })
+          .from(materials)
+          .where(
+            and(
+              eq(materials.id, poi.materialId),
+              eq(materials.vendorId, vendorId),
+            ),
+          );
+
+        const convValue = parseFloat(matRecord?.conversionValue || "1");
+        // Jumlah yang ditambahkan ke stok fisik (Satuan Pakai, misal: 10 Roll * 100 Meter = 1000 Meter)
+        const addedStockConsumption = actualQtyNum * convValue;
+
+        // 1. Update Detail Item PO (Tetap menyimpan jumlah riil PO dalam Satuan Beli)
+        await tx
+          .update(purchaseOrderItems)
+          .set({
+            actualQty: actualQtyNum.toString(),
+            actualSubtotal: actualSubtotal.toString(),
+          })
+          .where(eq(purchaseOrderItems.id, itemInput.itemId));
+
+        let currentStockNum = 0;
+        let newStockNum = 0;
+
+        // 2. Tambahkan Stok ke Database (Satuan Pakai / Konsumsi)
+        if (poi.materialColorId) {
+          // Kategori Kain / Benang (Stok tersimpan per varian warna)
+          const [colorRecord] = await tx
+            .select({ stock: materialColors.stock })
+            .from(materialColors)
+            .where(eq(materialColors.id, poi.materialColorId));
+
+          currentStockNum = parseFloat(colorRecord?.stock || "0");
+          newStockNum = currentStockNum + addedStockConsumption;
+
+          await tx
+            .update(materialColors)
+            .set({
+              stock: String(newStockNum),
+              updatedAt: new Date(),
+            })
+            .where(eq(materialColors.id, poi.materialColorId));
+
+          // Sync stok akumulasi di tabel induk material
+          const currentMatStock = parseFloat(matRecord?.stock || "0");
+          await tx
+            .update(materials)
+            .set({
+              stock: String(currentMatStock + addedStockConsumption),
+              updatedAt: new Date(),
+            })
+            .where(eq(materials.id, poi.materialId));
+        } else {
+          // Kategori Aksesoris (Stok tersimpan di material induk)
+          currentStockNum = parseFloat(matRecord?.stock || "0");
+          newStockNum = currentStockNum + addedStockConsumption;
+
+          await tx
+            .update(materials)
+            .set({
+              stock: String(newStockNum),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(materials.id, poi.materialId),
+                eq(materials.vendorId, vendorId),
+              ),
+            );
+        }
+
+        // 3. Catat Pergerakan Stok (Simpan jumlah konversi dalam Satuan Pakai)
+        await tx.insert(materialStockMovements).values({
+          id: `msm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          vendorId,
+          materialId: poi.materialId,
+          materialColorId: poi.materialColorId || null,
+          type: "in",
+          quantity: String(addedStockConsumption),
+          stockBefore: String(currentStockNum),
+          stockAfter: String(newStockNum),
+          referenceType: "PURCHASE_ORDER",
+          referenceId: poId,
+          notes: `Penerimaan Pembelian (${poHeader.poNumber}) - ${actualQtyNum} )`,
+        });
+      }
+
+      const estimatedTotal = parseFloat(poHeader.totalEstimatedAmount || "0");
+      const variance = totalActualAmount - estimatedTotal;
+
+      // 4. Update Header PO Status Delivered
+      await tx
+        .update(purchaseOrders)
+        .set({
+          status: "delivered",
+          totalActualAmount: totalActualAmount.toString(),
+          amountVariance: variance.toString(),
+          deliveredAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(purchaseOrders.id, poId));
+    });
 
     revalidatePath("/supervisor/production/purchase");
     return {
       success: true,
-      message: "Penerimaan barang berhasil & stok ditambahkan!",
+      message: "Penerimaan barang berhasil & stok terkonversi ditambahkan!",
     };
   } catch (error: any) {
     console.error("Deliver PO Error:", error);
@@ -261,10 +320,9 @@ export async function deliverPOAction(
   }
 }
 
-// 3. Batalkan PO (CANCEL) - HANYA BISA KETIKA MASIH PENDING
+// 3. Batalkan PO (CANCEL)
 export async function cancelPOAction(poId: string) {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return { success: false, message: "Akses ditolak." };
 
   try {
@@ -309,8 +367,7 @@ export async function cancelPOAction(poId: string) {
 
 // Fetch PO List
 export async function getPurchaseOrdersAction(statusFilter?: string) {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return [];
 
   try {
@@ -370,8 +427,7 @@ export async function getPurchaseOrdersAction(statusFilter?: string) {
 
 // Fetch Export Data untuk Modal CSV Spreadsheet
 export async function getExportDataAction(startDate: string, endDate: string) {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return [];
 
   try {
@@ -419,12 +475,10 @@ export async function getExportDataAction(startDate: string, endDate: string) {
 }
 
 export async function getAllMaterialsAction() {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return [];
 
   try {
-    // 1. Fetch Bahan Varian Kain/Benang dengan Join Warna
     const fabricAndThreads = await db
       .select({
         id: materialColors.id,
@@ -442,7 +496,6 @@ export async function getAllMaterialsAction() {
       .innerJoin(units, eq(materials.purchaseUnitId, units.id))
       .where(eq(materials.vendorId, vendorId));
 
-    // 2. Fetch Aksesoris (Tanpa Warna)
     const accessories = await db
       .select({
         id: materials.id,

@@ -95,6 +95,7 @@ export async function getPaginatedProducts({
         colorId: productVariants.colorId,
         barcode: productVariants.barcode,
         price: productVariants.price,
+        finishingPrice: productVariants.finishingPrice,
         stock: productVariants.stock,
       })
       .from(productVariants)
@@ -153,6 +154,8 @@ export async function getPaginatedProducts({
           sewingPrice: productParts.sewingPrice,
           overdeckPrice: productParts.overdeckPrice,
           listPrice: productParts.listPrice,
+          colorMode: productParts.colorMode,
+          fixedColorId: productParts.fixedColorId,
         })
         .from(productParts)
         .where(inArray(productParts.productVariantId, variantIds))
@@ -250,7 +253,6 @@ export async function getProductOptions() {
   };
 }
 
-// Full Sequential Upsert (100% Kompatibel dengan Neon HTTP Driver)
 export async function upsertFullProduct(
   prevState: ProductState | undefined,
   formData: FormData,
@@ -320,14 +322,17 @@ export async function upsertFullProduct(
     const sizeMap = new Map((allSizes || []).map((s) => [s.id, s.name]));
     const colorMap = new Map((allColors || []).map((c) => [c.id, c.name]));
 
-    // 2. Loop & Upsert Variants SKU & Part/BOM per Size
+    // 2. Loop & Upsert Variants SKU beserta Parts & Materials
     for (const sId of payload.selectedSizes) {
       const sizeName = sizeMap.get(sId) || "";
 
       for (const cId of payload.selectedColors) {
         const colorName = colorMap.get(cId) || "";
         const comboKey = `${sId}_${cId}`;
-        const varConfig = payload.variants[comboKey] || { price: 0 };
+        const varConfig = payload.variants[comboKey] || {
+          price: 0,
+          finishingPrice: 0,
+        };
 
         const generatedSKU = `${slugify(productName)}-${slugify(colorName)}-${slugify(sizeName)}`;
 
@@ -345,17 +350,110 @@ export async function upsertFullProduct(
           ? existingVar.id
           : `pv_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
+        const sizeParts = payload.partsPerSize?.[sId] || [];
+
         if (existingVar) {
+          // UPDATE DATA VARIAN / SKU
           await db
             .update(productVariants)
             .set({
               sku: generatedSKU,
               barcode: numericBarcode,
               price: (varConfig.price || 0).toString(),
+              finishingPrice: (varConfig.finishingPrice || 0).toString(),
               updatedAt: new Date(),
             })
             .where(eq(productVariants.id, existingVar.id));
+
+          // UPDATE/SINKRONISASI DAFTAR PART DENGAN DATABASE
+          const currentDbParts = await db
+            .select()
+            .from(productParts)
+            .where(eq(productParts.productVariantId, existingVar.id))
+            .orderBy(productParts.sequence);
+
+          for (let idx = 0; idx < sizeParts.length; idx++) {
+            const pt = sizeParts[idx];
+            const existingDbPart = currentDbParts[idx];
+
+            if (existingDbPart) {
+              // Update Part yang Sudah Ada
+              await db
+                .update(productParts)
+                .set({
+                  name: pt.name,
+                  cuttingPrice: (pt.cuttingPrice || 0).toString(),
+                  sewingPrice: (pt.sewingPrice || 0).toString(),
+                  overdeckPrice: (pt.overdeckPrice || 0).toString(),
+                  listPrice: (pt.listPrice || 0).toString(),
+                  colorMode: pt.colorMode || "matching_sku",
+                  fixedColorId:
+                    pt.colorMode === "fixed_color"
+                      ? pt.fixedColorId || null
+                      : null,
+                  updatedAt: new Date(),
+                })
+                .where(eq(productParts.id, existingDbPart.id));
+
+              // Re-insert Material Bahan Baku
+              await db
+                .delete(productPartMaterials)
+                .where(
+                  eq(productPartMaterials.productPartId, existingDbPart.id),
+                );
+
+              if (pt.materials && pt.materials.length > 0) {
+                const materialInserts = pt.materials.map((m: any) => ({
+                  id: `ppm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                  vendorId,
+                  productPartId: existingDbPart.id,
+                  materialId: m.materialId,
+                  materialColorId: m.materialColorId || null,
+                  quantity: (m.quantity || 0).toString(),
+                  consumptionUnitId: m.consumptionUnitId,
+                  wastePercentage: (m.wastePercentage || 0).toString(),
+                }));
+
+                await db.insert(productPartMaterials).values(materialInserts);
+              }
+            } else {
+              // Insert Part Baru jika User Menambah Part saat Edit
+              const newPartId = `pt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+              await db.insert(productParts).values({
+                id: newPartId,
+                vendorId,
+                productVariantId: existingVar.id,
+                name: pt.name,
+                sequence: idx + 1,
+                cuttingPrice: (pt.cuttingPrice || 0).toString(),
+                sewingPrice: (pt.sewingPrice || 0).toString(),
+                overdeckPrice: (pt.overdeckPrice || 0).toString(),
+                listPrice: (pt.listPrice || 0).toString(),
+                colorMode: pt.colorMode || "matching_sku",
+                fixedColorId:
+                  pt.colorMode === "fixed_color"
+                    ? pt.fixedColorId || null
+                    : null,
+              });
+
+              if (pt.materials && pt.materials.length > 0) {
+                const materialInserts = pt.materials.map((m: any) => ({
+                  id: `ppm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                  vendorId,
+                  productPartId: newPartId,
+                  materialId: m.materialId,
+                  materialColorId: m.materialColorId || null,
+                  quantity: (m.quantity || 0).toString(),
+                  consumptionUnitId: m.consumptionUnitId,
+                  wastePercentage: (m.wastePercentage || 0).toString(),
+                }));
+
+                await db.insert(productPartMaterials).values(materialInserts);
+              }
+            }
+          }
         } else {
+          // INSERT KHUSUS VARIAN BARU
           await db.insert(productVariants).values({
             id: targetVariantId,
             vendorId,
@@ -365,47 +463,43 @@ export async function upsertFullProduct(
             colorId: cId,
             barcode: numericBarcode,
             price: (varConfig.price || 0).toString(),
+            finishingPrice: (varConfig.finishingPrice || 0).toString(),
             stock: "0",
           });
-        }
 
-        // Clean Up Old Parts
-        await db
-          .delete(productParts)
-          .where(eq(productParts.productVariantId, targetVariantId));
+          for (let idx = 0; idx < sizeParts.length; idx++) {
+            const pt = sizeParts[idx];
+            const partId = `pt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-        // Part murni per Size
-        const sizeParts = payload.partsPerSize?.[sId] || [];
-
-        for (let idx = 0; idx < sizeParts.length; idx++) {
-          const pt = sizeParts[idx];
-          const partId = `pt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-
-          await db.insert(productParts).values({
-            id: partId,
-            vendorId,
-            productVariantId: targetVariantId,
-            name: pt.name,
-            sequence: idx + 1,
-            cuttingPrice: (pt.cuttingPrice || 0).toString(),
-            sewingPrice: (pt.sewingPrice || 0).toString(),
-            overdeckPrice: (pt.overdeckPrice || 0).toString(),
-            listPrice: (pt.listPrice || 0).toString(),
-          });
-
-          if (pt.materials && pt.materials.length > 0) {
-            const materialInserts = pt.materials.map((m: any) => ({
-              id: `ppm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            await db.insert(productParts).values({
+              id: partId,
               vendorId,
-              productPartId: partId,
-              materialId: m.materialId,
-              materialColorId: null,
-              quantity: (m.quantity || 0).toString(),
-              consumptionUnitId: m.consumptionUnitId,
-              wastePercentage: (m.wastePercentage || 0).toString(),
-            }));
+              productVariantId: targetVariantId,
+              name: pt.name,
+              sequence: idx + 1,
+              cuttingPrice: (pt.cuttingPrice || 0).toString(),
+              sewingPrice: (pt.sewingPrice || 0).toString(),
+              overdeckPrice: (pt.overdeckPrice || 0).toString(),
+              listPrice: (pt.listPrice || 0).toString(),
+              colorMode: pt.colorMode || "matching_sku",
+              fixedColorId:
+                pt.colorMode === "fixed_color" ? pt.fixedColorId || null : null,
+            });
 
-            await db.insert(productPartMaterials).values(materialInserts);
+            if (pt.materials && pt.materials.length > 0) {
+              const materialInserts = pt.materials.map((m: any) => ({
+                id: `ppm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                vendorId,
+                productPartId: partId,
+                materialId: m.materialId,
+                materialColorId: m.materialColorId || null,
+                quantity: (m.quantity || 0).toString(),
+                consumptionUnitId: m.consumptionUnitId,
+                wastePercentage: (m.wastePercentage || 0).toString(),
+              }));
+
+              await db.insert(productPartMaterials).values(materialInserts);
+            }
           }
         }
       }

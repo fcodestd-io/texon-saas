@@ -48,13 +48,23 @@ export const poCategoryEnum = pgEnum("po_category", [
   "accessory",
 ]);
 
-// Enums Tambahan
 export const stockMovementTypeEnum = pgEnum("stock_movement_type", [
   "in",
   "out",
   "adjustment",
   "return",
 ]);
+
+export const cuttingTargetStatusEnum = pgEnum("cutting_target_status", [
+  "started",
+  "finished",
+  "canceled",
+]);
+
+export const productionProcessCategoryEnum = pgEnum(
+  "production_process_category",
+  ["cutting", "sewing", "overdeck", "finishing"],
+);
 
 // ==========================================
 // MASTER TABLES
@@ -227,6 +237,84 @@ export const materialColors = pgTable(
   ],
 );
 
+// Tabel Log Mutasi Stok Material (dengan stockBefore & stockAfter)
+export const materialStockMovements = pgTable(
+  "material_stock_movements",
+  {
+    id: text("id").primaryKey(),
+    vendorId: text("vendor_id")
+      .notNull()
+      .references(() => vendors.id, { onDelete: "cascade" }),
+    materialId: text("material_id")
+      .notNull()
+      .references(() => materials.id, { onDelete: "cascade" }),
+    materialColorId: text("material_color_id").references(
+      () => materialColors.id,
+      { onDelete: "set null" },
+    ),
+    type: stockMovementTypeEnum("type").notNull(),
+    quantity: decimal("quantity", { precision: 18, scale: 6 }).notNull(),
+    stockBefore: decimal("stock_before", { precision: 18, scale: 6 }).notNull(),
+    stockAfter: decimal("stock_after", { precision: 18, scale: 6 }).notNull(),
+    referenceType: text("reference_type").notNull(), // 'PURCHASE_ORDER', 'STOCK_ADJUSTMENT', 'PRODUCTION_USAGE'
+    referenceId: text("reference_id").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("stock_movements_vendor_idx").on(table.vendorId),
+    index("stock_movements_material_idx").on(table.materialId),
+    index("stock_movements_ref_idx").on(table.referenceId),
+  ],
+);
+
+// Header Opname / Penyesuaian Stok Bahan Baku
+export const materialStockAdjustments = pgTable(
+  "material_stock_adjustments",
+  {
+    id: text("id").primaryKey(),
+    vendorId: text("vendor_id")
+      .notNull()
+      .references(() => vendors.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    title: text("title").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [index("mat_stock_adj_vendor_idx").on(table.vendorId)],
+);
+
+// Detail Item Opname / Penyesuaian Stok Bahan Baku
+export const materialStockAdjustmentItems = pgTable(
+  "material_stock_adjustment_items",
+  {
+    id: text("id").primaryKey(),
+    materialStockAdjustmentId: text("material_stock_adjustment_id")
+      .notNull()
+      .references(() => materialStockAdjustments.id, { onDelete: "cascade" }),
+    materialId: text("material_id")
+      .notNull()
+      .references(() => materials.id, { onDelete: "cascade" }),
+    materialColorId: text("material_color_id").references(
+      () => materialColors.id,
+      { onDelete: "set null" },
+    ),
+    systemStock: decimal("system_stock", { precision: 18, scale: 6 }).notNull(),
+    actualStock: decimal("actual_stock", { precision: 18, scale: 6 }).notNull(),
+    difference: decimal("difference", { precision: 18, scale: 6 }).notNull(),
+  },
+  (table) => [
+    index("mat_stock_adj_item_header_idx").on(table.materialStockAdjustmentId),
+    index("mat_stock_adj_item_material_idx").on(table.materialId),
+  ],
+);
+
 // ==========================================
 // PRODUCT & BOM TABLES
 // ==========================================
@@ -270,6 +358,9 @@ export const productVariants = pgTable(
       .references(() => colors.id),
     barcode: text("barcode"),
     price: numeric("price", { precision: 18, scale: 2 }).default("0").notNull(),
+    finishingPrice: numeric("finishing_price", { precision: 18, scale: 2 })
+      .default("0")
+      .notNull(), // Tarif Finishing per Size/Varian
     stock: numeric("stock", { precision: 18, scale: 6 }).default("0").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -316,6 +407,15 @@ export const productParts = pgTable(
     listPrice: numeric("list_price", { precision: 18, scale: 2 })
       .default("0")
       .notNull(),
+
+    // ==========================================
+    // TAMBAHKAN DUA KOLOM INI:
+    // ==========================================
+    colorMode: text("color_mode").default("matching_sku").notNull(), // "matching_sku" ATAU "fixed_color"
+    fixedColorId: text("fixed_color_id").references(() => colors.id, {
+      onDelete: "set null",
+    }),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -326,6 +426,7 @@ export const productParts = pgTable(
   (table) => [
     index("product_parts_vendor_id_idx").on(table.vendorId),
     index("product_parts_variant_id_idx").on(table.productVariantId),
+    index("product_parts_fixed_color_id_idx").on(table.fixedColorId), // Optional index untuk mempercepat JOIN warna fixed
   ],
 );
 
@@ -373,28 +474,6 @@ export const productPartMaterials = pgTable(
 // ==========================================
 // INTEGRATIONS & EMPLOYEES
 // ==========================================
-export const couriers = pgTable(
-  "couriers",
-  {
-    id: text("id").primaryKey(),
-    vendorId: text("vendor_id")
-      .notNull()
-      .references(() => vendors.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    prefixCode: text("prefix_code").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-  },
-  (table) => [
-    index("couriers_vendor_id_idx").on(table.vendorId),
-    uniqueIndex("couriers_vendor_name_unique").on(table.vendorId, table.name),
-  ],
-);
-
 export const marketplaces = pgTable(
   "marketplaces",
   {
@@ -409,9 +488,6 @@ export const marketplaces = pgTable(
     })
       .default("0")
       .notNull(),
-    courierId: text("courier_id").references(() => couriers.id, {
-      onDelete: "set null",
-    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -448,41 +524,8 @@ export const employees = pgTable(
 );
 
 // ==========================================
-// PURCHASE ORDERS (TRANSAKSI PEMBELIAN BAHAN)
+// PURCHASE ORDERS
 // ==========================================
-
-// Tabel Log Mutasi Stok Material
-export const materialStockMovements = pgTable(
-  "material_stock_movements",
-  {
-    id: text("id").primaryKey(),
-    vendorId: text("vendor_id")
-      .notNull()
-      .references(() => vendors.id, { onDelete: "cascade" }),
-    materialId: text("material_id")
-      .notNull()
-      .references(() => materials.id, { onDelete: "cascade" }),
-    materialColorId: text("material_color_id").references(
-      () => materialColors.id,
-      { onDelete: "set null" },
-    ),
-    type: stockMovementTypeEnum("type").notNull(),
-    quantity: decimal("quantity", { precision: 18, scale: 6 }).notNull(),
-    referenceType: text("reference_type").notNull(), // Contoh: 'PURCHASE_ORDER'
-    referenceId: text("reference_id").notNull(), // ID PO
-    notes: text("notes"),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-  },
-  (table) => [
-    index("stock_movements_vendor_idx").on(table.vendorId),
-    index("stock_movements_material_idx").on(table.materialId),
-    index("stock_movements_ref_idx").on(table.referenceId),
-  ],
-);
-
-// Tabel Purchase Orders (Header)
 export const purchaseOrders = pgTable(
   "purchase_orders",
   {
@@ -525,7 +568,6 @@ export const purchaseOrders = pgTable(
   ],
 );
 
-// Tabel Purchase Order Items
 export const purchaseOrderItems = pgTable(
   "purchase_order_items",
   {
@@ -566,14 +608,9 @@ export const purchaseOrderItems = pgTable(
   ],
 );
 
-// Enum Status Target Potongan
-export const cuttingTargetStatusEnum = pgEnum("cutting_target_status", [
-  "started",
-  "finished",
-  "canceled",
-]);
-
-// 1. Header Target Potongan Per Tanggal
+// ==========================================
+// PRODUCTION TRACKING
+// ==========================================
 export const cuttingTargets = pgTable(
   "cutting_targets",
   {
@@ -584,9 +621,9 @@ export const cuttingTargets = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
-    targetDate: text("target_date").notNull(), // Format YYYY-MM-DD
+    targetDate: text("target_date").notNull(),
     title: text("title").notNull(),
-    status: cuttingTargetStatusEnum("status").notNull().default("started"), // Auto Started
+    status: cuttingTargetStatusEnum("status").notNull().default("started"),
     notes: text("notes"),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     canceledAt: timestamp("canceled_at", { withTimezone: true }),
@@ -606,7 +643,6 @@ export const cuttingTargets = pgTable(
   ],
 );
 
-// 2. Item Target Potongan (Produk, Varian SKU, Size, Warna, & Qty Set)
 export const cuttingTargetItems = pgTable(
   "cutting_target_items",
   {
@@ -635,7 +671,6 @@ export const cuttingTargetItems = pgTable(
   ],
 );
 
-// 3. Breakdown Part Produk (Snapshot Komponen Produk e.g., Atasan, Bawahan, Kerudung)
 export const cuttingTargetItemParts = pgTable(
   "cutting_target_item_parts",
   {
@@ -643,11 +678,11 @@ export const cuttingTargetItemParts = pgTable(
     cuttingTargetItemId: text("cutting_target_item_id")
       .notNull()
       .references(() => cuttingTargetItems.id, { onDelete: "cascade" }),
-    partName: text("part_name").notNull(), // Contoh: "Atasan Jenita", "Bawahan Jenita"
+    partName: text("part_name").notNull(),
     partTargetQty: decimal("part_target_qty", {
       precision: 18,
       scale: 2,
-    }).notNull(), // e.g. 130
+    }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -657,13 +692,6 @@ export const cuttingTargetItemParts = pgTable(
   ],
 );
 
-// Enum Kategori Proses Produksi
-export const productionProcessCategoryEnum = pgEnum(
-  "production_process_category",
-  ["cutting", "sewing", "overdeck", "finishing"],
-);
-
-// 1. Header Transaksi Tracking Produksi
 export const productionLogs = pgTable(
   "production_logs",
   {
@@ -680,8 +708,8 @@ export const productionLogs = pgTable(
     category: productionProcessCategoryEnum("category").notNull(),
     employeeId: text("employee_id")
       .notNull()
-      .references(() => employees.id), // Karyawan yang mengerjakan (Cutter / Sewer / Overdeck / Finisher)
-    nextEmployeeId: text("next_employee_id").references(() => employees.id), // Karyawan penerima tahap berikutnya (Penjahit / Overdeck)
+      .references(() => employees.id),
+    nextEmployeeId: text("next_employee_id").references(() => employees.id),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -696,7 +724,6 @@ export const productionLogs = pgTable(
   ],
 );
 
-// 2. Detail Item Tracking Level Part (Cutting, Sewing, Overdeck)
 export const productionLogParts = pgTable(
   "production_log_parts",
   {
@@ -711,11 +738,11 @@ export const productionLogParts = pgTable(
       .notNull()
       .references(() => cuttingTargetItemParts.id),
     productPartId: text("product_part_id").references(() => productParts.id),
-    qty: decimal("qty", { precision: 18, scale: 2 }).notNull(), // Qty hasil pengerjaan bagus
+    qty: decimal("qty", { precision: 18, scale: 2 }).notNull(),
     defectQty: decimal("defect_qty", { precision: 18, scale: 2 })
       .default("0.00")
-      .notNull(), // Qty barang cacat/reject
-    defectNotes: text("defect_notes"), // Keterangan cacat (e.g. kain bolong, obras kekecilan)
+      .notNull(),
+    defectNotes: text("defect_notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -726,7 +753,6 @@ export const productionLogParts = pgTable(
   ],
 );
 
-// 3. Detail Item Tracking Level SKU Setelan (Khusus Finishing)
 export const productionLogFinishingItems = pgTable(
   "production_log_finishing_items",
   {
@@ -743,14 +769,14 @@ export const productionLogFinishingItems = pgTable(
     completedQty: decimal("completed_qty", {
       precision: 18,
       scale: 2,
-    }).notNull(), // Qty Setelan Lolos (Siap Jual)
+    }).notNull(),
     defectQty: decimal("defect_qty", {
       precision: 18,
       scale: 2,
     })
       .default("0.00")
-      .notNull(), // Qty Setelan Reject/Cacat
-    defectNotes: text("defect_notes"), // Catatan Cacat Finishing (e.g. Noda oli, kancing lepas)
+      .notNull(),
+    defectNotes: text("defect_notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -761,7 +787,9 @@ export const productionLogFinishingItems = pgTable(
   ],
 );
 
-// 1. Tabel Kartu Stok / Pergerakan Stok Produk
+// ==========================================
+// WAREHOUSE & PRODUCT STOCK
+// ==========================================
 export const productStockMovements = pgTable(
   "product_stock_movements",
   {
@@ -773,10 +801,10 @@ export const productStockMovements = pgTable(
       .notNull()
       .references(() => productVariants.id, { onDelete: "cascade" }),
     type: stockMovementTypeEnum("type").notNull(),
-    quantity: decimal("quantity", { precision: 18, scale: 2 }).notNull(), // Perubahan stok (+/-)
+    quantity: decimal("quantity", { precision: 18, scale: 2 }).notNull(),
     stockBefore: decimal("stock_before", { precision: 18, scale: 2 }).notNull(),
     stockAfter: decimal("stock_after", { precision: 18, scale: 2 }).notNull(),
-    referenceType: text("reference_type"), // e.g. "STOCK_ADJUSTMENT", "PRODUCTION_FINISHING", "OUTGOING_ORDER"
+    referenceType: text("reference_type"),
     referenceId: text("reference_id"),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -789,7 +817,6 @@ export const productStockMovements = pgTable(
   ],
 );
 
-// 2. Header Document Penyesuaian Stok (Opname)
 export const stockAdjustments = pgTable(
   "stock_adjustments",
   {
@@ -800,7 +827,7 @@ export const stockAdjustments = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id),
-    title: text("title").notNull(), // Judul Opname / Penyesuaian (e.g., "Opname Akhir Bulan")
+    title: text("title").notNull(),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -809,7 +836,6 @@ export const stockAdjustments = pgTable(
   (table) => [index("stock_adj_vendor_idx").on(table.vendorId)],
 );
 
-// 3. Detail Item Opname Per SKU
 export const stockAdjustmentItems = pgTable(
   "stock_adjustment_items",
   {
@@ -822,12 +848,11 @@ export const stockAdjustmentItems = pgTable(
       .references(() => productVariants.id),
     systemStock: decimal("system_stock", { precision: 18, scale: 2 }).notNull(),
     actualStock: decimal("actual_stock", { precision: 18, scale: 2 }).notNull(),
-    difference: decimal("difference", { precision: 18, scale: 2 }).notNull(), // actualStock - systemStock
+    difference: decimal("difference", { precision: 18, scale: 2 }).notNull(),
   },
   (table) => [index("stock_adj_item_adj_idx").on(table.stockAdjustmentId)],
 );
 
-// 1. Header Transaksi Produk Masuk Gudang
 export const warehouseIncomings = pgTable(
   "warehouse_incomings",
   {
@@ -841,7 +866,7 @@ export const warehouseIncomings = pgTable(
     cuttingTargetId: text("cutting_target_id")
       .notNull()
       .references(() => cuttingTargets.id, { onDelete: "cascade" }),
-    referenceNumber: text("reference_number").notNull(), // e.g., "IN-20260906-001"
+    referenceNumber: text("reference_number").notNull(),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -853,7 +878,6 @@ export const warehouseIncomings = pgTable(
   ],
 );
 
-// 2. Detail Item Produk Masuk Gudang Per SKU Varian
 export const warehouseIncomingItems = pgTable(
   "warehouse_incoming_items",
   {
@@ -864,7 +888,7 @@ export const warehouseIncomingItems = pgTable(
     productVariantId: text("product_variant_id")
       .notNull()
       .references(() => productVariants.id),
-    quantity: decimal("quantity", { precision: 18, scale: 2 }).notNull(), // Qty Setelan yang Diterima Gudang
+    quantity: decimal("quantity", { precision: 18, scale: 2 }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -875,7 +899,6 @@ export const warehouseIncomingItems = pgTable(
   ],
 );
 
-// 1. Header Transaksi Barang Keluar
 export const warehouseOutgoings = pgTable(
   "warehouse_outgoings",
   {
@@ -889,7 +912,7 @@ export const warehouseOutgoings = pgTable(
     marketplaceId: text("marketplace_id").references(() => marketplaces.id, {
       onDelete: "set null",
     }),
-    referenceNumber: text("reference_number").notNull(), // e.g. "OUT-20260906-123"
+    referenceNumber: text("reference_number").notNull(),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -901,7 +924,6 @@ export const warehouseOutgoings = pgTable(
   ],
 );
 
-// 2. Detail Item Barang Keluar Per SKU
 export const warehouseOutgoingItems = pgTable(
   "warehouse_outgoing_items",
   {
@@ -924,7 +946,7 @@ export const warehouseOutgoingItems = pgTable(
     index("wh_out_item_variant_idx").on(table.productVariantId),
   ],
 );
-// 1. Header Transaksi Retur / Barang Kembali
+
 export const warehouseReturns = pgTable(
   "warehouse_returns",
   {
@@ -938,7 +960,7 @@ export const warehouseReturns = pgTable(
     marketplaceId: text("marketplace_id").references(() => marketplaces.id, {
       onDelete: "set null",
     }),
-    referenceNumber: text("reference_number").notNull(), // e.g. "RET-20260906-123"
+    referenceNumber: text("reference_number").notNull(),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -950,7 +972,6 @@ export const warehouseReturns = pgTable(
   ],
 );
 
-// 2. Detail Item Barang Kembali
 export const warehouseReturnItems = pgTable(
   "warehouse_return_items",
   {
@@ -961,11 +982,11 @@ export const warehouseReturnItems = pgTable(
     productVariantId: text("product_variant_id")
       .notNull()
       .references(() => productVariants.id),
-    returnType: text("return_type").notNull(), // "RESTOCK" (Ke Etalase) atau "DEFECTIVE" (Cacat/Afkir)
+    returnType: text("return_type").notNull(), // "RESTOCK" atau "DEFECTIVE"
     quantity: decimal("quantity", { precision: 18, scale: 2 }).notNull(),
     stockBefore: decimal("stock_before", { precision: 18, scale: 2 }).notNull(),
     stockAfter: decimal("stock_after", { precision: 18, scale: 2 }).notNull(),
-    reason: text("reason"), // Alasan retur (misal: salah ukuran, kain rebas, dll)
+    reason: text("reason"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -973,5 +994,40 @@ export const warehouseReturnItems = pgTable(
   (table) => [
     index("wh_ret_item_header_idx").on(table.warehouseReturnId),
     index("wh_ret_item_variant_idx").on(table.productVariantId),
+  ],
+);
+
+// ==========================================
+// PAYROLL & CASHFLOW VALIDATION
+// ==========================================
+export const employeePayrolls = pgTable(
+  "employee_payrolls",
+  {
+    id: text("id").primaryKey(),
+    vendorId: text("vendor_id")
+      .notNull()
+      .references(() => vendors.id, { onDelete: "cascade" }),
+    employeeId: text("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id), // Owner/Admin yang memvalidasi
+    periodStartDate: text("period_start_date").notNull(), // Format: "YYYY-MM-DD" (Senin)
+    periodEndDate: text("period_end_date").notNull(), // Format: "YYYY-MM-DD" (Minggu)
+    totalSalary: decimal("total_salary", { precision: 18, scale: 2 }).notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("emp_payrolls_vendor_idx").on(table.vendorId),
+    index("emp_payrolls_emp_idx").on(table.employeeId),
+    uniqueIndex("emp_payrolls_emp_period_unique").on(
+      table.vendorId,
+      table.employeeId,
+      table.periodStartDate,
+    ),
   ],
 );

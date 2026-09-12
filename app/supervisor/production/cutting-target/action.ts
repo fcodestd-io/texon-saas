@@ -15,15 +15,30 @@ import {
   colors,
 } from "@/db/schema";
 import { auth } from "@/auth";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
+
+/**
+ * Helper untuk mendapatkan vendorId dan userId
+ */
+async function getVendorAndUser() {
+  try {
+    const session = await auth();
+    return {
+      vendorId: (session?.user as any)?.vendorId || null,
+      userId: session?.user?.id || null,
+    };
+  } catch (err) {
+    console.error("Auth Session Error:", err);
+    return { vendorId: null, userId: null };
+  }
+}
 
 /**
  * 1. Fetch Master Produk & Varian untuk Modal Create Target
  */
 export async function getMasterProductsForTargetAction() {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return [];
 
   try {
@@ -35,36 +50,65 @@ export async function getMasterProductsForTargetAction() {
       .from(products)
       .where(eq(products.vendorId, vendorId));
 
+    if (allProducts.length === 0) return [];
+
+    const productIds = allProducts.map((p) => p.productId);
+
+    // Fetch semua varian produk
+    const rawVariants = await db
+      .select({
+        variantId: productVariants.id,
+        productId: productVariants.productId,
+        sku: productVariants.sku,
+        sizeName: sizes.name,
+        colorName: colors.name,
+      })
+      .from(productVariants)
+      .innerJoin(sizes, eq(productVariants.sizeId, sizes.id))
+      .innerJoin(colors, eq(productVariants.colorId, colors.id))
+      .where(
+        and(
+          eq(productVariants.vendorId, vendorId),
+          inArray(productVariants.productId, productIds),
+        ),
+      );
+
+    if (rawVariants.length === 0) return [];
+
+    const variantIds = rawVariants.map((v) => v.variantId);
+
+    // Fetch semua parts produk
+    const rawParts = await db
+      .select({
+        id: productParts.id,
+        productVariantId: productParts.productVariantId,
+        partName: productParts.name,
+      })
+      .from(productParts)
+      .where(
+        and(
+          eq(productParts.vendorId, vendorId),
+          inArray(productParts.productVariantId, variantIds),
+        ),
+      );
+
     const result = [];
+
     for (const prod of allProducts) {
-      const variants = await db
-        .select({
-          variantId: productVariants.id,
-          sku: productVariants.sku,
-          sizeName: sizes.name,
-          colorName: colors.name,
-        })
-        .from(productVariants)
-        .innerJoin(sizes, eq(productVariants.sizeId, sizes.id))
-        .innerJoin(colors, eq(productVariants.colorId, colors.id))
-        .where(eq(productVariants.productId, prod.productId));
+      const prodVariants = rawVariants.filter(
+        (v) => v.productId === prod.productId,
+      );
 
-      const variantDetails = [];
-      for (const v of variants) {
-        const parts = await db
-          .select({
-            id: productParts.id,
-            partName: productParts.name,
-          })
-          .from(productParts)
-          .where(eq(productParts.productVariantId, v.variantId));
-
-        variantDetails.push({
+      const variantDetails = prodVariants.map((v) => {
+        const parts = rawParts.filter(
+          (pt) => pt.productVariantId === v.variantId,
+        );
+        return {
           ...v,
           parts:
             parts.length > 0 ? parts : [{ id: null, partName: "Utama / Baju" }],
-        });
-      }
+        };
+      });
 
       if (variantDetails.length > 0) {
         result.push({
@@ -83,7 +127,7 @@ export async function getMasterProductsForTargetAction() {
 }
 
 /**
- * 2. Simpan Target Potongan Baru (Status: STARTED)
+ * 2. Simpan Target Potongan Baru (Status: STARTED) Tanpa Memotong Stok Bahan Baku
  */
 export async function createCuttingTargetAction(data: {
   targetDate: string;
@@ -100,9 +144,7 @@ export async function createCuttingTargetAction(data: {
     parts: string[];
   }>;
 }) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId, userId } = await getVendorAndUser();
 
   if (!userId || !vendorId)
     return { success: false, message: "Akses ditolak." };
@@ -110,63 +152,67 @@ export async function createCuttingTargetAction(data: {
     return { success: false, message: "Pilih minimal 1 item target." };
 
   try {
-    const targetHeaderId = `ct_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    await db.transaction(async (tx) => {
+      const targetHeaderId = `ct_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-    await db.insert(cuttingTargets).values({
-      id: targetHeaderId,
-      vendorId,
-      userId,
-      targetDate: data.targetDate,
-      title: data.title || `Target Potongan - ${data.targetDate}`,
-      status: "started",
-      notes: data.notes || "",
-    });
-
-    for (const item of data.items) {
-      const targetItemId = `cti_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-
-      await db.insert(cuttingTargetItems).values({
-        id: targetItemId,
-        cuttingTargetId: targetHeaderId,
-        productId: item.productId,
-        productVariantId: item.productVariantId,
-        productNameSnapshot: item.productNameSnapshot,
-        sizeSnapshot: item.sizeSnapshot,
-        colorSnapshot: item.colorSnapshot,
-        skuSnapshot: item.skuSnapshot,
-        targetQty: item.targetQty.toString(),
+      // 1. Insert Header Target Potongan
+      await tx.insert(cuttingTargets).values({
+        id: targetHeaderId,
+        vendorId,
+        userId,
+        targetDate: data.targetDate,
+        title: data.title || `Target Potongan - ${data.targetDate}`,
+        status: "started",
+        notes: data.notes || "",
       });
 
-      for (const partName of item.parts) {
-        await db.insert(cuttingTargetItemParts).values({
-          id: `ctip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          cuttingTargetItemId: targetItemId,
-          partName,
-          partTargetQty: item.targetQty.toString(),
+      for (const item of data.items) {
+        const targetItemId = `cti_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+        // 2. Insert Item Target Potongan
+        await tx.insert(cuttingTargetItems).values({
+          id: targetItemId,
+          cuttingTargetId: targetHeaderId,
+          productId: item.productId,
+          productVariantId: item.productVariantId,
+          productNameSnapshot: item.productNameSnapshot,
+          sizeSnapshot: item.sizeSnapshot,
+          colorSnapshot: item.colorSnapshot,
+          skuSnapshot: item.skuSnapshot,
+          targetQty: item.targetQty.toString(),
         });
+
+        // 3. Insert Parts Target Potongan
+        for (const partName of item.parts) {
+          await tx.insert(cuttingTargetItemParts).values({
+            id: `ctip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            cuttingTargetItemId: targetItemId,
+            partName,
+            partTargetQty: item.targetQty.toString(),
+          });
+        }
       }
-    }
+    });
 
     revalidatePath("/supervisor/production/cutting-target");
     return {
       success: true,
-      message: "Target potongan berhasil dibuat (Status: STARTED).",
+      message: "Target potongan berhasil dibuat.",
     };
   } catch (error: any) {
     console.error("Create Cutting Target Error:", error);
     return {
       success: false,
-      message: error?.message || "Gagal membuat target.",
+      message: error?.message || "Gagal membuat target potongan.",
     };
   }
 }
 
 /**
- * 3. Fetch Target Potongan Beserta Progress Real-time Produksi (Cutting, Sewing, Overdeck, & Finishing)
+ * 3. Fetch Target Potongan Beserta Progress Real-time Produksi
  */
 export async function getCuttingTargetsByDateAction(dateStr: string) {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return [];
 
   try {
@@ -181,38 +227,50 @@ export async function getCuttingTargetsByDateAction(dateStr: string) {
       )
       .orderBy(desc(cuttingTargets.createdAt));
 
-    const results = [];
-    for (const t of targets) {
-      const items = await db
-        .select()
-        .from(cuttingTargetItems)
-        .where(eq(cuttingTargetItems.cuttingTargetId, t.id));
+    if (targets.length === 0) return [];
 
-      const itemsWithProgress = [];
-      for (const item of items) {
-        // Fetch Finishing Qty (Level SKU / Siap Jual)
-        const finishingLogs = await db
-          .select({
-            completedQty: productionLogFinishingItems.completedQty,
-          })
-          .from(productionLogFinishingItems)
-          .where(eq(productionLogFinishingItems.cuttingTargetItemId, item.id));
+    const targetIds = targets.map((t) => t.id);
 
-        const totalFinishedSkuQty = finishingLogs.reduce(
-          (sum, l) => sum + parseFloat(l.completedQty || "0"),
-          0,
-        );
+    const items = await db
+      .select()
+      .from(cuttingTargetItems)
+      .where(inArray(cuttingTargetItems.cuttingTargetId, targetIds));
 
-        // Fetch Parts (Level Part)
-        const parts = await db
-          .select()
-          .from(cuttingTargetItemParts)
-          .where(eq(cuttingTargetItemParts.cuttingTargetItemId, item.id));
+    const itemIds = items.map((i) => i.id);
 
-        const partsWithProgress = [];
-        for (const pt of parts) {
-          const logParts = await db
+    // Fetch Finishing Qty
+    const finishingLogs =
+      itemIds.length > 0
+        ? await db
             .select({
+              cuttingTargetItemId:
+                productionLogFinishingItems.cuttingTargetItemId,
+              completedQty: productionLogFinishingItems.completedQty,
+            })
+            .from(productionLogFinishingItems)
+            .where(
+              inArray(productionLogFinishingItems.cuttingTargetItemId, itemIds),
+            )
+        : [];
+
+    // Fetch Parts
+    const parts =
+      itemIds.length > 0
+        ? await db
+            .select()
+            .from(cuttingTargetItemParts)
+            .where(inArray(cuttingTargetItemParts.cuttingTargetItemId, itemIds))
+        : [];
+
+    const partIds = parts.map((p) => p.id);
+
+    // Fetch Log Parts Progress
+    const logParts =
+      partIds.length > 0
+        ? await db
+            .select({
+              cuttingTargetItemPartId:
+                productionLogParts.cuttingTargetItemPartId,
               category: productionLogs.category,
               qty: productionLogParts.qty,
             })
@@ -221,34 +279,58 @@ export async function getCuttingTargetsByDateAction(dateStr: string) {
               productionLogs,
               eq(productionLogParts.productionLogId, productionLogs.id),
             )
-            .where(eq(productionLogParts.cuttingTargetItemPartId, pt.id));
+            .where(inArray(productionLogParts.cuttingTargetItemPartId, partIds))
+        : [];
 
-          const cutQty = logParts
+    const results = [];
+
+    for (const t of targets) {
+      const targetItems = items.filter((i) => i.cuttingTargetId === t.id);
+
+      const itemsWithProgress = targetItems.map((item) => {
+        const itemFinishing = finishingLogs.filter(
+          (f) => f.cuttingTargetItemId === item.id,
+        );
+        const totalFinishedSkuQty = itemFinishing.reduce(
+          (sum, l) => sum + parseFloat(l.completedQty || "0"),
+          0,
+        );
+
+        const itemParts = parts.filter(
+          (pt) => pt.cuttingTargetItemId === item.id,
+        );
+
+        const partsWithProgress = itemParts.map((pt) => {
+          const ptLogs = logParts.filter(
+            (l) => l.cuttingTargetItemPartId === pt.id,
+          );
+
+          const cutQty = ptLogs
             .filter((l) => l.category === "cutting")
             .reduce((sum, l) => sum + parseFloat(l.qty || "0"), 0);
 
-          const sewQty = logParts
+          const sewQty = ptLogs
             .filter((l) => l.category === "sewing")
             .reduce((sum, l) => sum + parseFloat(l.qty || "0"), 0);
 
-          const ovdQty = logParts
+          const ovdQty = ptLogs
             .filter((l) => l.category === "overdeck")
             .reduce((sum, l) => sum + parseFloat(l.qty || "0"), 0);
 
-          partsWithProgress.push({
+          return {
             ...pt,
             cutQty,
-            sewQty,
+            sewingQty: sewQty,
             ovdQty,
-          });
-        }
+          };
+        });
 
-        itemsWithProgress.push({
+        return {
           ...item,
           totalFinishedSkuQty,
           parts: partsWithProgress,
-        });
-      }
+        };
+      });
 
       results.push({ ...t, items: itemsWithProgress });
     }
@@ -264,8 +346,7 @@ export async function getCuttingTargetsByDateAction(dateStr: string) {
  * 4. Closing Target Potongan (Status: FINISHED)
  */
 export async function finishCuttingTargetAction(targetId: string) {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return { success: false, message: "Akses ditolak." };
 
   try {
@@ -301,8 +382,7 @@ export async function finishCuttingTargetAction(targetId: string) {
  * 5. Pembatalan Target (Status: CANCELED)
  */
 export async function cancelCuttingTargetAction(targetId: string) {
-  const session = await auth();
-  const vendorId = (session?.user as any)?.vendorId;
+  const { vendorId } = await getVendorAndUser();
   if (!vendorId) return { success: false, message: "Akses ditolak." };
 
   try {
