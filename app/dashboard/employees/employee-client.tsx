@@ -42,11 +42,7 @@ const TYPE_CONFIGS: Record<
     icon: Sparkles,
     colorClass: "bg-amber-950/30 text-amber-400 border-amber-900/50",
   },
-  packing: {
-    label: "PACKING",
-    icon: Package,
-    colorClass: "bg-rose-950/30 text-rose-400 border-rose-900/50",
-  },
+
 };
 
 export function EmployeeClient({
@@ -270,7 +266,7 @@ export function EmployeeClient({
                   <option value="sewing">SEWING (JAHIT)</option>
                   <option value="overdeck">OVERDECK (KAM)</option>
                   <option value="finishing">FINISHING (NEAT/CLEAN)</option>
-                  <option value="packing">PACKING (KEMAS)</option>
+                
                 </select>
                 {state?.errors?.type && (
                   <p className="text-[10px] text-red-500 font-mono">

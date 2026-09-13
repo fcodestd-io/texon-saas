@@ -109,8 +109,6 @@ export function getDashboardPathByRole(role?: string): string {
       return "/supervisor/production/dashboard";
     case "spv_warehouse":
       return "/supervisor/warehouse/dashboard";
-    case "spv_global":
-      return "/supervisor/dashboard";
     default:
       return "/login";
   }

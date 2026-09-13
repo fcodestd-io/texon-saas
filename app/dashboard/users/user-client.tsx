@@ -21,7 +21,6 @@ const ROLE_LABELS: Record<string, string> = {
   admin: "ADMINISTRATOR",
   spv_production: "SPV PRODUCTION",
   spv_warehouse: "SPV WAREHOUSE",
-  spv_global: "SPV GLOBAL",
 };
 
 export function UserClient({ initialUsers }: { initialUsers: any[] }) {
@@ -281,7 +280,8 @@ export function UserClient({ initialUsers }: { initialUsers: any[] }) {
                   <option value="admin">ADMINISTRATOR</option>
                   <option value="spv_production">SPV PRODUCTION</option>
                   <option value="spv_warehouse">SPV WAREHOUSE</option>
-                  <option value="spv_global">SPV GLOBAL</option>
+                 
+                 
                 </select>
                 {state?.errors?.role && (
                   <p className="text-[10px] text-red-500 font-mono">

@@ -237,7 +237,7 @@ export function UserClient({
               <option value="admin">ADMIN MASTER</option>
               <option value="spv_production">SPV PRODUCTION</option>
               <option value="spv_warehouse">SPV WAREHOUSE</option>
-              <option value="spv_global">SPV GLOBAL</option>
+             
             </select>
           </div>
         </div>
@@ -434,7 +434,6 @@ export function UserClient({
                   <option value="admin">ADMIN (MASTER DATA)</option>
                   <option value="spv_production">SPV PRODUCTION</option>
                   <option value="spv_warehouse">SPV WAREHOUSE</option>
-                  <option value="spv_global">SPV GLOBAL</option>
                   <option value="superadmin">SUPERADMIN SAAS</option>
                 </select>
               </div>

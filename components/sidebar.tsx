@@ -15,14 +15,13 @@ import {
   UserCheck,
   LogOut,
   ShieldCheck,
-  FileText,
-  Building2,
-  Loader2,
   TrendingUp,
   Workflow,
   DollarSign,
   ArrowRightLeft,
   Receipt,
+  Loader2,
+  Building2,
 } from "lucide-react";
 
 interface MenuItem {
@@ -79,7 +78,6 @@ export function Sidebar({ user }: SidebarProps) {
                 href: "/superadmin/users",
                 icon: Users,
               },
-            
             ],
           },
         ];
@@ -116,11 +114,16 @@ export function Sidebar({ user }: SidebarProps) {
                 href: "/dashboard/integrations",
                 icon: Truck,
               },
-              {
-                title: "MANAJEMEN USER",
-                href: "/dashboard/users",
-                icon: Users,
-              },
+              // Sembunyikan jika role adalah 'admin'
+              ...(user.role === "owner"
+                ? [
+                    {
+                      title: "MANAJEMEN USER",
+                      href: "/dashboard/users",
+                      icon: Users,
+                    },
+                  ]
+                : []),
             ],
           },
           {
